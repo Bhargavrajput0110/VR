@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VISAGE — Virtual Try-On</title>
+  <meta name="description" content="Try on premium glasses frames in real time using your camera. Powered by MediaPipe face tracking and Three.js 3D rendering." />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <!-- ═══════════════════════════ VIEWPORT ════════════════════════════ -->
+  <div id="viewport">
+    <!-- Live webcam feed (mirrored) -->
+    <video id="webcam" autoplay muted playsinline></video>
+
+    <!-- Debug canvas: face mesh landmark overlay (hidden by default) -->
+    <canvas id="debugCanvas"></canvas>
+
+    <!-- Three.js WebGL canvas (transparent) -->
+    <canvas id="threeCanvas"></canvas>
+
+    <!-- No-face pulse border overlay -->
+    <div id="noFaceBorder" class="no-face-border hidden"></div>
+  </div>
+
+  <!-- ═══════════════════════════ LOADING SCREEN ════════════════════════════ -->
+  <div id="loadingScreen" class="overlay">
+    <div class="loading-content">
+      <div class="spinner"></div>
+      <p class="loading-text">Initializing face tracking…</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ START SCREEN ════════════════════════════ -->
+  <div id="startScreen" class="overlay active">
+    <div class="start-content">
+      <div class="logo-lockup">
+        <span class="logo-eyebrow">✦ VIRTUAL TRY-ON</span>
+        <h1 class="logo-wordmark">VISAGE</h1>
+      </div>
+      <h2 class="start-headline">Find Your<br /><em>Perfect Frame.</em></h2>
+      <p class="start-sub">Try on premium glasses in real time using your camera.<br />No app. No download. Just you.</p>
+      <button id="startBtn" class="btn-primary">
+        <span>Start Try-On</span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ CAMERA ERROR ════════════════════════════ -->
+  <div id="errorScreen" class="overlay hidden">
+    <div class="error-content">
+      <div class="error-icon">⚠</div>
+      <h3 class="error-title">Camera Access Blocked</h3>
+      <p class="error-sub">Please allow camera permissions in your browser settings to use Virtual Try-On.</p>
+      <button id="retryBtn" class="btn-primary">Enable Camera</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ HEADER ════════════════════════════ -->
+  <header id="appHeader" class="app-header hidden">
+    <div class="header-left">
+      <span class="header-logo">VISAGE</span>
+      <span class="header-tagline">Virtual Try-On</span>
+    </div>
+    <div class="header-right">
+      <div class="fps-counter">
+        <span class="fps-label">FPS</span>
+        <span id="fpsDisplay" class="fps-value">--</span>
+      </div>
+      <div class="debug-badge hidden" id="debugBadge">DEBUG</div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════ NO-FACE LABEL ════════════════════════════ -->
+  <div id="noFaceLabel" class="no-face-label hidden">
+    <span class="pulse-dot"></span>
+    Position your face in frame
+  </div>
+
+  <!-- ═══════════════════════════ GLASSES SELECTOR (bottom panel) ════════════════════════════ -->
+  <div id="glassesPanel" class="glasses-panel hidden">
+    <div class="panel-header">
+      <span class="panel-title">Choose Your Frame</span>
+    </div>
+    <div id="glassesRow" class="glasses-row">
+      <!-- Populated dynamically by JS -->
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ ACTION BUTTONS ════════════════════════════ -->
+  <div id="actionButtons" class="action-buttons hidden">
+    <button id="captureBtn" class="action-btn" title="Capture Photo">
+      <span class="action-icon">📸</span>
+      <span class="action-label">Capture</span>
+    </button>
+    <button id="resetBtn" class="action-btn" title="Reset">
+      <span class="action-icon">🔄</span>
+      <span class="action-label">Reset</span>
+    </button>
+    <button id="stopBtn" class="action-btn" title="Stop Camera">
+      <span class="action-icon">✕</span>
+      <span class="action-label">Stop</span>
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════ SHUTTER FLASH ════════════════════════════ -->
+  <div id="shutterFlash" class="shutter-flash hidden"></div>
+
+  <!-- ═══════════════════════════ TRIANGLE DEBUG ════════════════════════════ -->
+  <div id="debugStats" class="debug-stats hidden">
+    <span>▲ <span id="triCount">0</span></span>
+    <span>OBJ <span id="objCount">0</span></span>
+  </div>
+
+  <!-- MediaPipe CDN (non-module scripts loaded before app) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+  <!-- App entry point -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
