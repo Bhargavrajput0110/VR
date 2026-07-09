@@ -50,6 +50,10 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
   height: 100%;
   overflow: hidden;
   background: #000;
+  /* Prevent scroll/zoom hijacking the camera feed on mobile */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 #webcam,
@@ -209,6 +213,27 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
   line-height: 1.7;
 }
 
+.error-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  width: 100%;
+  max-width: 340px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+}
+
+.error-step {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.error-steps:empty { display: none; }
+
 /* ── BUTTONS ──────────────────────────────────────────────────────── */
 .btn-primary {
   display: inline-flex;
@@ -246,6 +271,8 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
   align-items: center;
   justify-content: space-between;
   padding: 14px 24px;
+  /* Extra top padding for iOS notch / Dynamic Island */
+  padding-top: max(14px, env(safe-area-inset-top));
   background: rgba(13, 13, 13, 0.65);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -362,6 +389,8 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
   right: 0;
   z-index: 20;
   padding: 18px 24px 24px;
+  /* Respect iOS home indicator */
+  padding-bottom: max(24px, calc(env(safe-area-inset-bottom) + 14px));
   background: rgba(13, 13, 13, 0.78);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -437,7 +466,7 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
 .action-buttons {
   position: fixed;
   right: 22px;
-  bottom: 130px;
+  bottom: max(148px, calc(env(safe-area-inset-bottom) + 148px));
   z-index: 20;
   display: flex;
   flex-direction: column;
@@ -536,7 +565,8 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
 /* ── RESPONSIVE ───────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .glasses-panel {
-    padding: 14px 16px 20px;
+    padding: 14px 16px;
+    padding-bottom: max(20px, calc(env(safe-area-inset-bottom) + 14px));
   }
   .glasses-row {
     flex-wrap: nowrap;
@@ -550,7 +580,6 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
 
   .action-buttons {
     right: 12px;
-    bottom: 130px;
     gap: 8px;
   }
   .action-btn {
@@ -567,7 +596,14 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
 }
 
 @media (max-width: 480px) {
-  .logo-wordmark      { font-size: 48px; }
-  .start-headline     { font-size: 24px; }
-  .action-buttons     { bottom: 155px; }
+  .logo-wordmark  { font-size: 48px; }
+  .start-headline { font-size: 24px; }
+  .action-buttons { right: 10px; }
+}
+
+/* Portrait phones: extra bottom room for action buttons above the panel */
+@media (max-width: 480px) and (orientation: portrait) {
+  .action-buttons {
+    bottom: max(168px, calc(env(safe-area-inset-bottom) + 168px));
+  }
 }

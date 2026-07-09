@@ -1,66 +1,92 @@
 /**
  * VISAGE — Virtual Try-On  |  app.js
- * Complete ES Module implementation
+ * Production-grade ES Module
  *
- * CDN Dependencies:
- *  - three@0.160.0          https://unpkg.com/three@0.160.0/build/three.module.js
- *  - GLTFLoader             https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js
- *  - @mediapipe/face_mesh   https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js
- *  - @mediapipe/camera_utils https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js
+ * Core Stack:
+ *  - MediaPipe Tasks Vision (FaceLandmarker) — WASM SIMD, 468-point 3D landmarks
+ *  - Three.js 0.160 — WebGL renderer, OrthographicCamera
+ *  - DracoLoader / GLTFLoader — compressed GLB asset pipeline
+ *  - GLTFExporter + IndexedDB — runtime GLB bake & cache (zero repeat-load cost)
+ *  - BufferGeometryUtils.mergeGeometries — single draw-call frame meshes
  */
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader }           from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
+import { GLTFExporter }         from 'three/addons/exporters/GLTFExporter.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
+import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const GLASSES_SCALE_MULTIPLIER = 2.0;   // Ortho: glasses width ≈ eye distance × 2
-const GLASSES_Y_OFFSET         = -0.02; // Push glasses slightly below eye center toward nose bridge
-const GLASSES_Z_OFFSET         = 0.05;  // Z push forward so glasses render in front
-const LERP_FACTOR              = 0.65;  // Snappy tracking — higher = more responsive
-const MEDIAPIPE_FPS            = 30;    // Max face mesh update rate
-const FACE_LOST_TIMEOUT_MS     = 2000;  // ms before hiding glasses after face lost
-const MP_PROCESS_W             = 480;   // Downsampled width fed to MediaPipe (faster!)
-const MP_PROCESS_H             = 270;   // Downsampled height fed to MediaPipe
-const DEBUG_KEY                = 'd';   // Keyboard key to toggle debug overlay
+const GLASSES_Z_OFFSET = 0.05;  // push forward in ortho space
+const LERP_POS         = 0.55;  // position smoothing
+const LERP_ROT         = 0.50;  // rotation smoothing
+const LERP_SCALE       = 0.50;  // scale smoothing
+const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
+const DEBUG_KEY        = 'd';
+const IDB_DB_NAME      = 'visage_glb_cache';
+const IDB_STORE_NAME   = 'glbs';
+const IDB_VERSION      = 3;     // bump to invalidate old cache
 
-// Landmark indices
+// Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
-  LEFT_EYE:     33,
-  RIGHT_EYE:    263,
-  NOSE_BRIDGE:  168,
-  LEFT_TEMPLE:  234,
-  RIGHT_TEMPLE: 454,
-  MID_BROW:     151,
+  // 6-point solvePnP set
+  NOSE_TIP:       4,
+  CHIN:           152,
+  L_EYE_INNER:    133,
+  R_EYE_INNER:    362,
+  L_MOUTH:        61,
+  R_MOUTH:        291,
+
+  // Used for scale / placement
+  L_EYE_OUTER:    33,
+  R_EYE_OUTER:    263,
+  L_TEMPLE:       234,
+  R_TEMPLE:       454,
+  NOSE_BRIDGE:    168,
 };
+
+// Canonical 3D face model points (metric, Z forward) for 6-point pose solve
+const FACE_MODEL_3D = [
+  new THREE.Vector3(0,      0,      0    ), // NOSE_TIP
+  new THREE.Vector3(0,     -0.33,  -0.03 ), // CHIN
+  new THREE.Vector3(-0.145,-0.17,  -0.12 ), // L_EYE_INNER
+  new THREE.Vector3( 0.145,-0.17,  -0.12 ), // R_EYE_INNER
+  new THREE.Vector3(-0.08, -0.54,  -0.04 ), // L_MOUTH
+  new THREE.Vector3( 0.08, -0.54,  -0.04 ), // R_MOUTH
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
 const state = {
   cameraStream:     null,
-  mpCamera:         null,
+  faceLandmarker:   null,
+  rafHandle:        null,
   isRunning:        false,
   faceDetected:     false,
   faceLostTimer:    null,
-  glassesOpacity:   1.0,
-  currentGlassesId: 'classic',
+  currentGlassesId: 'wayfarer',
   debugMode:        false,
-  lastMpTime:       0,
   fps:              0,
   frameCount:       0,
   fpsTimer:         0,
+  lastFrameMs:      0,
 };
 
-// Target transforms for lerping
+// Smoothed transform targets
 const target = {
   position: new THREE.Vector3(),
-  scale:    new THREE.Vector3(1, 1, 1),
-  rotation: new THREE.Euler(),
+  // Start scale near-zero so glasses don't flash at world-origin size
+  // before the first face detection sets a real value.
+  scale:    new THREE.Vector3(0.001, 0.001, 0.001),
+  quat:     new THREE.Quaternion(),
 };
 
-// Loaded models cache
+// GLB model cache (id → THREE.Group clone-source)
 const modelCache = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,28 +94,32 @@ const modelCache = new Map();
 // ─────────────────────────────────────────────────────────────────────────────
 const GLASSES_CATALOG = [
   {
-    id:        'classic',
-    name:      'Classic Round',
-    thumbnail: '🕶️',
-    color:     0xc9a84c,
-    style:     'round',
-    modelUrl:  null,
+    id:    'wayfarer',
+    name:  'Classic Wayfarer',
+    emoji: '🕶️',
+    color: 0x111111,      // matte black acetate
+    style: 'wayfarer',
   },
   {
-    id:        'aviator',
-    name:      'Aviator',
-    thumbnail: '✈️',
-    color:     0x4a4a4a,
-    style:     'aviator',
-    modelUrl:  null,
+    id:    'clubmaster',
+    name:  'Browline',
+    emoji: '👓',
+    color: 0x3b2219,      // dark tortoiseshell
+    style: 'clubmaster',
   },
   {
-    id:        'rectangular',
-    name:      'Rectangular',
-    thumbnail: '▭',
-    color:     0x8B4513,
-    style:     'rectangular',
-    modelUrl:  null,
+    id:    'aviator',
+    name:  'Gold Aviator',
+    emoji: '✈️',
+    color: 0xd4af37,      // brushed gold
+    style: 'aviator',
+  },
+  {
+    id:    'round',
+    name:  'Round Silver',
+    emoji: '⭕',
+    color: 0xb0b0b0,      // polished silver
+    style: 'round',
   },
 ];
 
@@ -103,6 +133,7 @@ const el = {
   threeCanvas:   document.getElementById('threeCanvas'),
   noFaceBorder:  document.getElementById('noFaceBorder'),
   loadingScreen: document.getElementById('loadingScreen'),
+  loadingText:   document.getElementById('loadingText'),
   startScreen:   document.getElementById('startScreen'),
   errorScreen:   document.getElementById('errorScreen'),
   appHeader:     document.getElementById('appHeader'),
@@ -116,68 +147,75 @@ const el = {
   fpsDisplay:    document.getElementById('fpsDisplay'),
   triCount:      document.getElementById('triCount'),
   objCount:      document.getElementById('objCount'),
-
-  // Buttons
-  startBtn:   document.getElementById('startBtn'),
-  retryBtn:   document.getElementById('retryBtn'),
-  captureBtn: document.getElementById('captureBtn'),
-  resetBtn:   document.getElementById('resetBtn'),
-  stopBtn:    document.getElementById('stopBtn'),
+  startBtn:      document.getElementById('startBtn'),
+  retryBtn:      document.getElementById('retryBtn'),
+  captureBtn:    document.getElementById('captureBtn'),
+  resetBtn:      document.getElementById('resetBtn'),
+  stopBtn:       document.getElementById('stopBtn'),
+  // Error screen dynamic elements
+  errorIcon:     document.getElementById('errorIcon'),
+  errorTitle:    document.getElementById('errorTitle'),
+  errorSub:      document.getElementById('errorSub'),
+  errorSteps:    document.getElementById('errorSteps'),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THREE.JS SETUP
 // ─────────────────────────────────────────────────────────────────────────────
-let renderer, scene, camera, glassesGroup;
+let renderer, scene, orthoCamera, glassesGroup, envMap;
 const clock = new THREE.Clock();
 
-// Ortho camera half-height is 1 in world units; width scales by aspect
 function makeOrthoCamera() {
   const aspect = window.innerWidth / window.innerHeight;
   const halfH  = 1.0;
-  const halfW  = halfH * aspect;
-  const cam    = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.01, 10);
+  const cam    = new THREE.OrthographicCamera(
+    -halfH * aspect, halfH * aspect,
+     halfH,         -halfH,
+     0.01, 100
+  );
   cam.position.z = 5;
   return cam;
 }
 
 function initThree() {
-  // Renderer
+  const isMobile = window.innerWidth <= 768;
+
   renderer = new THREE.WebGLRenderer({
-    canvas:    el.threeCanvas,
-    alpha:     true,
-    antialias: true,
+    canvas:          el.threeCanvas,
+    alpha:           true,
+    antialias:       !isMobile,      // disable on mobile for perf
     powerPreference: 'high-performance',
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // Adaptive pixel ratio: 1.5 cap on mobile, 2 on desktop
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, 0);
+  renderer.toneMapping        = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+  renderer.outputColorSpace   = THREE.SRGBColorSpace;
 
-  // Scene
   scene = new THREE.Scene();
-  scene.background = null;
 
-  // Orthographic camera — landmark XY maps directly to world XY, zero distortion
-  camera = makeOrthoCamera();
+  orthoCamera = makeOrthoCamera();
+
+  // Environment map for PBR reflections on metal/glass materials
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  envMap = pmrem.fromScene(new RoomEnvironment()).texture;
+  pmrem.dispose();
+  scene.environment = envMap;
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.7);
-  scene.add(ambient);
-
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  const ambient  = new THREE.AmbientLight(0xffffff, 0.5);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
   dirLight.position.set(2, 4, 5);
-  scene.add(dirLight);
+  const rimLight = new THREE.PointLight(0xc9a84c, 0.6, 20);
+  rimLight.position.set(-2, 2, 3);
+  scene.add(ambient, dirLight, rimLight);
 
-  const rimLight = new THREE.PointLight(0xc9a84c, 0.5, 10);
-  rimLight.position.set(0, 1, 3);
-  scene.add(rimLight);
-
-  // Glasses group (container for model/transform)
   glassesGroup = new THREE.Group();
   glassesGroup.visible = false;
   scene.add(glassesGroup);
 
-  // Resize handler
   window.addEventListener('resize', onResize);
 }
 
@@ -186,354 +224,136 @@ function onResize() {
   const h = window.innerHeight;
   renderer.setSize(w, h);
 
-  // Rebuild ortho frustum for new aspect
-  const aspect = w / h;
-  const halfH  = 1.0;
-  camera.left   = -halfH * aspect;
-  camera.right  =  halfH * aspect;
-  camera.top    =  halfH;
-  camera.bottom = -halfH;
-  camera.updateProjectionMatrix();
+  const aspect      = w / h;
+  const halfH       = 1.0;
+  orthoCamera.left  = -halfH * aspect;
+  orthoCamera.right =  halfH * aspect;
+  orthoCamera.top   =  halfH;
+  orthoCamera.bottom = -halfH;
+  orthoCamera.updateProjectionMatrix();
 
-  // Sync 2D canvas size
   el.debugCanvas.width  = w;
   el.debugCanvas.height = h;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COORDINATE MAPPING
+// COORDINATE MAPPING  (object-fit:cover aware)
 // ─────────────────────────────────────────────────────────────────────────────
-/**
- * Maps a MediaPipe normalized landmark [0..1] to Three.js world space.
- *
- * With an OrthographicCamera (-aspect..aspect, -1..1) this is trivial:
- *   worldX = -(lm.x - 0.5) * 2 * aspect     (flip X for mirror)
- *   worldY = -(lm.y - 0.5) * 2
- * No trig, no FOV math, no drift.
- */
-function landmarkToWorld(landmark) {
-  const aspect = window.innerWidth / window.innerHeight;
-  const worldX = -(landmark.x - 0.5) * 2.0 * aspect;  // mirrored
-  const worldY = -(landmark.y - 0.5) * 2.0;
-  const worldZ =  GLASSES_Z_OFFSET;                    // flat in front
-  return new THREE.Vector3(worldX, worldY, worldZ);
+function landmarkToWorld(lm) {
+  const w  = window.innerWidth;
+  const h  = window.innerHeight;
+  const vw = el.webcam.videoWidth  || w;
+  const vh = el.webcam.videoHeight || h;
+
+  const windowAspect = w / h;
+  const videoAspect  = vw / vh;
+  const scale        = windowAspect > videoAspect ? w / vw : h / vh;
+
+  const rvw  = vw * scale;
+  const rvh  = vh * scale;
+  const offX = (w - rvw) / 2;
+  const offY = (h - rvh) / 2;
+
+  // Mirror X (front camera is mirrored in CSS with scaleX(-1))
+  const px = offX + (1.0 - lm.x) * rvw;
+  const py = offY + lm.y * rvh;
+
+  const halfH  = 1.0;
+  const halfW  = halfH * windowAspect;
+  const worldX =  (px / w) * (2 * halfW) - halfW;
+  const worldY = -((py / h) * (2 * halfH) - halfH);
+
+  return new THREE.Vector3(worldX, worldY, GLASSES_Z_OFFSET);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROCEDURAL GLASSES GEOMETRY
+// HEAD POSE — Extracted directly from Google's optimized facial transform matrix
 // ─────────────────────────────────────────────────────────────────────────────
-function createProceduralGlasses(catalogEntry) {
-  const group  = new THREE.Group();
-  const color  = catalogEntry.color;
-  const style  = catalogEntry.style;
-
-  const metalMat = new THREE.MeshStandardMaterial({
-    color:     color,
-    metalness: 0.82,
-    roughness: 0.18,
-  });
-
-  // Lens geometry based on style
-  let leftLens, rightLens;
-
-  if (style === 'round') {
-    const lensGeo = new THREE.TorusGeometry(0.085, 0.013, 12, 32);
-    leftLens  = new THREE.Mesh(lensGeo,       metalMat);
-    rightLens = new THREE.Mesh(lensGeo.clone(), metalMat);
-  } else if (style === 'aviator') {
-    // Aviator: hexagonal / teardrop shape using TorusGeometry scaled elliptically
-    const lensGeo = new THREE.TorusGeometry(0.092, 0.013, 12, 6);
-    leftLens  = new THREE.Mesh(lensGeo,       metalMat);
-    rightLens = new THREE.Mesh(lensGeo.clone(), metalMat);
-    leftLens.scale.set(0.85, 1.15, 1);
-    rightLens.scale.set(0.85, 1.15, 1);
-  } else {
-    // Rectangular: use 4-sided ring geometry
-    const rGeo = new THREE.RingGeometry(0.058, 0.076, 4);
-    rGeo.rotateZ(Math.PI / 4);  // align diamond→rect
-    // Scale to make it more rectangular than square
-    const scaleGeo = new THREE.RingGeometry(0.058, 0.076, 4);
-    scaleGeo.rotateZ(Math.PI / 4);
-    leftLens  = new THREE.Mesh(scaleGeo,        metalMat);
-    rightLens = new THREE.Mesh(scaleGeo.clone(), metalMat);
-    leftLens.scale.set(2.0, 1.1, 1);
-    rightLens.scale.set(2.0, 1.1, 1);
-  }
-
-  // Position both lenses
-  leftLens.position.set(-0.175, 0, 0);
-  rightLens.position.set(0.175, 0, 0);
-  group.add(leftLens, rightLens);
-
-  // Nose bridge
-  const bridgeGeo = new THREE.CylinderGeometry(0.007, 0.007, 0.10, 8);
-  bridgeGeo.rotateZ(Math.PI / 2);
-  const bridge = new THREE.Mesh(bridgeGeo, metalMat);
-  bridge.position.set(0, -0.008, 0);
-  group.add(bridge);
-
-  // Temple arms (left & right)
-  const armGeo   = new THREE.BoxGeometry(0.24, 0.011, 0.011);
-  const leftArm  = new THREE.Mesh(armGeo,        metalMat);
-  const rightArm = new THREE.Mesh(armGeo.clone(), metalMat);
-  leftArm.position.set(-0.295, 0, -0.06);
-  leftArm.rotation.y = -0.18;
-  rightArm.position.set(0.295, 0, -0.06);
-  rightArm.rotation.y = 0.18;
-  group.add(leftArm, rightArm);
-
-  // Lens fill (subtle tinted glass)
-  const lensFillMat = new THREE.MeshStandardMaterial({
-    color:       0x1a2a3a,    // dark blue-grey tint instead of pure black
-    transparent: true,
-    opacity:     0.45,
-    side:        THREE.DoubleSide,
-    metalness:   0.1,
-    roughness:   0.05,
-  });
-
-  if (style === 'round') {
-    const fillGeo = new THREE.CircleGeometry(0.082, 32);
-    const lFill   = new THREE.Mesh(fillGeo,        lensFillMat);
-    const rFill   = new THREE.Mesh(fillGeo.clone(), lensFillMat);
-    lFill.position.set(-0.175, 0, -0.002);
-    rFill.position.set(0.175,  0, -0.002);
-    group.add(lFill, rFill);
-  } else if (style === 'aviator') {
-    const fillGeo = new THREE.CircleGeometry(0.090, 6);
-    const lFill   = new THREE.Mesh(fillGeo,        lensFillMat);
-    const rFill   = new THREE.Mesh(fillGeo.clone(), lensFillMat);
-    lFill.scale.set(0.85, 1.15, 1);
-    rFill.scale.set(0.85, 1.15, 1);
-    lFill.position.set(-0.175, 0, -0.002);
-    rFill.position.set(0.175,  0, -0.002);
-    group.add(lFill, rFill);
-  } else {
-    // Rectangular fill
-    const fillGeo = new THREE.PlaneGeometry(0.19, 0.108);
-    const lFill   = new THREE.Mesh(fillGeo,        lensFillMat);
-    const rFill   = new THREE.Mesh(fillGeo.clone(), lensFillMat);
-    lFill.position.set(-0.175, 0, -0.002);
-    rFill.position.set(0.175,  0, -0.002);
-    group.add(lFill, rFill);
-  }
-
-  return group;
+function extractRotationFromMatrix(matrixArray) {
+  // MediaPipe provides a 4x4 column-major matrix
+  const mat = new THREE.Matrix4().fromArray(matrixArray);
+  
+  // Extract the raw rotation (which assumes an unmirrored camera)
+  // We must decompose the matrix because MediaPipe includes scaling and translation in it
+  const position = new THREE.Vector3();
+  const rawQuat = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  mat.decompose(position, rawQuat, scale);
+  
+  // Convert to Euler angles to fix the mirroring
+  const euler = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
+  
+  // Because our webcam video is mirrored horizontally via CSS/coords,
+  // we must invert Yaw (Y axis) and Roll (Z axis).
+  // Pitch (X axis) remains correct because looking up/down is unaffected by horizontal mirroring.
+  const mirroredEuler = new THREE.Euler(
+    euler.x,     // Pitch (keep)
+    -euler.y,    // Yaw (invert)
+    -euler.z,    // Roll (invert)
+    'XYZ'
+  );
+  
+  return new THREE.Quaternion().setFromEuler(mirroredEuler);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MODEL LOADING
+// FACE RESULT HANDLER
 // ─────────────────────────────────────────────────────────────────────────────
-const gltfLoader = new GLTFLoader();
+function onFaceResults(lmArray, transformMatrix) {
+  const le = landmarkToWorld(lmArray[LM.L_EYE_OUTER]);
+  const re = landmarkToWorld(lmArray[LM.R_EYE_OUTER]);
+  const nb = landmarkToWorld(lmArray[LM.NOSE_BRIDGE]);
 
-async function loadGlasses(catalogEntry) {
-  if (modelCache.has(catalogEntry.id)) {
-    return modelCache.get(catalogEntry.id);
-  }
-
-  if (catalogEntry.modelUrl) {
-    return new Promise((resolve) => {
-      gltfLoader.load(
-        catalogEntry.modelUrl,
-        (gltf) => {
-          const model = gltf.scene;
-          modelCache.set(catalogEntry.id, model);
-          resolve(model);
-        },
-        undefined,
-        (err) => {
-          console.warn(`[VISAGE] GLB load failed for "${catalogEntry.id}", falling back to procedural.`, err);
-          const proc = createProceduralGlasses(catalogEntry);
-          modelCache.set(catalogEntry.id, proc);
-          resolve(proc);
-        }
-      );
-    });
-  }
-
-  // No URL provided — build procedural
-  const proc = createProceduralGlasses(catalogEntry);
-  modelCache.set(catalogEntry.id, proc);
-  return proc;
-}
-
-async function setActiveGlasses(id) {
-  const entry = GLASSES_CATALOG.find(g => g.id === id);
-  if (!entry) return;
-
-  state.currentGlassesId = id;
-
-  // Clear existing children
-  disposeGlassesGroup();
-
-  // Update card UI
-  document.querySelectorAll('.glasses-card').forEach(c => {
-    c.classList.toggle('active', c.dataset.id === id);
-  });
-
-  showLoading(true);
-  const model = await loadGlasses(entry);
-
-  // Clone so we don't mutate shared cache
-  const clone = model.clone(true);
-  glassesGroup.add(clone);
-
-  showLoading(false);
-}
-
-function disposeGlassesGroup() {
-  const toRemove = [...glassesGroup.children];
-  toRemove.forEach(child => {
-    child.traverse(obj => {
-      if (obj.isMesh) {
-        obj.geometry?.dispose();
-        if (Array.isArray(obj.material)) {
-          obj.material.forEach(m => m.dispose());
-        } else {
-          obj.material?.dispose();
-        }
-      }
-    });
-    glassesGroup.remove(child);
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MEDIAPIPE SETUP
-// ─────────────────────────────────────────────────────────────────────────────
-let faceMesh = null;
-
-function initMediaPipe() {
-  return new Promise((resolve, reject) => {
-    faceMesh = new window.FaceMesh({
-      locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-    });
-
-    faceMesh.setOptions({
-      maxNumFaces:            1,
-      refineLandmarks:        false,  // OFF — saves ~50% CPU per frame
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence:  0.5,
-    });
-
-    faceMesh.onResults(onFaceMeshResults);
-
-    faceMesh.initialize()
-      .then(resolve)
-      .catch(reject);
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FACE TRACKING
-// ─────────────────────────────────────────────────────────────────────────────
-function onFaceMeshResults(results) {
-  // Draw debug landmarks if enabled
-  if (state.debugMode) drawDebugLandmarks(results);
-
-  if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-    const landmarks = results.multiFaceLandmarks[0];
-
-    // Face detected
-    if (!state.faceDetected) {
-      state.faceDetected = true;
-      clearTimeout(state.faceLostTimer);
-      showNoFaceUI(false);
-      glassesGroup.visible = true;
-    }
-
-    updateGlassesTransform(landmarks);
-  } else {
-    // No face detected
-    if (state.faceDetected) {
-      state.faceDetected = false;
-      state.faceLostTimer = setTimeout(() => {
-        showNoFaceUI(true);
-        // Fade out glasses over time
-        glassesGroup.visible = false;
-      }, FACE_LOST_TIMEOUT_MS);
-    }
-  }
-}
-
-function drawDebugLandmarks(results) {
-  const ctx  = el.debugCanvas.getContext('2d');
-  const w    = el.debugCanvas.width;
-  const h    = el.debugCanvas.height;
-  ctx.clearRect(0, 0, w, h);
-
-  if (!results.multiFaceLandmarks) return;
-
-  ctx.fillStyle = 'rgba(201, 168, 76, 0.7)';
-
-  for (const landmarks of results.multiFaceLandmarks) {
-    for (const lm of landmarks) {
-      // Mirror x because video is mirrored
-      const x = (1 - lm.x) * w;
-      const y = lm.y * h;
-      ctx.beginPath();
-      ctx.arc(x, y, 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TRANSFORM UPDATE
-// ─────────────────────────────────────────────────────────────────────────────
-function updateGlassesTransform(landmarks) {
-  const leftEye    = landmarkToWorld(landmarks[LM.LEFT_EYE]);
-  const rightEye   = landmarkToWorld(landmarks[LM.RIGHT_EYE]);
-  const noseBridge = landmarkToWorld(landmarks[LM.NOSE_BRIDGE]);
-  const leftTemple = landmarkToWorld(landmarks[LM.LEFT_TEMPLE]);
-  const rightTemple= landmarkToWorld(landmarks[LM.RIGHT_TEMPLE]);
-
-  // Position: midpoint between the two eyes, nudged slightly down to nose-bridge level
+  // Center between eyes, pushed slightly toward nose bridge
   const center = new THREE.Vector3()
-    .addVectors(leftEye, rightEye)
+    .addVectors(le, re)
     .multiplyScalar(0.5);
-
-  center.y += GLASSES_Y_OFFSET;
-  // Z is already set by landmarkToWorld to GLASSES_Z_OFFSET
+  center.y += (nb.y - center.y) * 0.35;
 
   target.position.copy(center);
 
-  // Scale: inter-eye distance × multiplier => glasses span the face width
-  const eyeDist     = leftEye.distanceTo(rightEye);
-  const scaleFactor = eyeDist * GLASSES_SCALE_MULTIPLIER;
-  target.scale.setScalar(Math.max(scaleFactor, 0.01));
+  // Scale: inter-eye distance × constant
+  const eyeDist  = le.distanceTo(re);
+  const sf       = Math.max(eyeDist * 2.1, 0.01);
+  target.scale.setScalar(sf);
 
-  // Roll: in-plane tilt between L and R eye
-  const roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+  // Apply highly-stable rotation from Google's internal solver
+  if (transformMatrix) {
+    target.quat.copy(extractRotationFromMatrix(transformMatrix));
+  }
+}
 
-  // Yaw: estimate head turn from ratio of visible eye-span vs temple-span
-  const templeWidth = rightTemple.x - leftTemple.x;
-  const eyeWidth    = rightEye.x    - leftEye.x;
-  const yaw = (Math.abs(templeWidth) > 0.001)
-    ? Math.atan2(eyeWidth - templeWidth, Math.abs(templeWidth)) * 0.3
-    : 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// DEBUG LANDMARKS
+// ─────────────────────────────────────────────────────────────────────────────
+function drawDebugLandmarks(lmArray) {
+  const ctx = el.debugCanvas.getContext('2d');
+  const w   = el.debugCanvas.width;
+  const h   = el.debugCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(201,168,76,0.7)';
 
-  // Pitch: how much higher is the nose bridge than the eye center (Y only — ortho z is flat)
-  const pitch = Math.atan2(noseBridge.y - center.y, 0.4) * 0.3;
+  const vw = el.webcam.videoWidth  || w;
+  const vh = el.webcam.videoHeight || h;
+  const s  = (w / h > vw / vh) ? w / vw : h / vh;
+  const rvw = vw * s, rvh = vh * s;
+  const ox  = (w - rvw) / 2, oy = (h - rvh) / 2;
 
-  target.rotation.set(pitch, yaw, -roll);
-
-  // Apply lerp / slerp
-  glassesGroup.position.lerp(target.position, LERP_FACTOR);
-  glassesGroup.scale.lerp(target.scale, LERP_FACTOR);
-
-  const tQuat = new THREE.Quaternion().setFromEuler(
-    new THREE.Euler(target.rotation.x, target.rotation.y, target.rotation.z, 'XYZ')
-  );
-  glassesGroup.quaternion.slerp(tQuat, LERP_FACTOR);
+  for (const lm of lmArray) {
+    const x = ox + (1 - lm.x) * rvw;
+    const y = oy + lm.y * rvh;
+    ctx.beginPath();
+    ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ANIMATION LOOP
 // ─────────────────────────────────────────────────────────────────────────────
-function animate() {
-  requestAnimationFrame(animate);
+function animate(nowMs) {
+  // nowMs is supplied by requestAnimationFrame as a DOMHighResTimeStamp
+  state.rafHandle = requestAnimationFrame(animate);
 
   const delta = clock.getDelta();
 
@@ -547,99 +367,579 @@ function animate() {
     state.fpsTimer   = 0;
   }
 
-  // Debug stats
+  // MediaPipe Tasks — detectForVideo requires a strictly increasing timestamp
+  // The rAF DOMHighResTimeStamp (nowMs) is perfect for this.
+  if (state.isRunning && state.faceLandmarker && el.webcam.readyState >= 2 && nowMs > 0) {
+    let results;
+    try {
+      results = state.faceLandmarker.detectForVideo(el.webcam, nowMs);
+    } catch (_) { /* ignore mid-init errors */ }
+
+    if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
+      const lmArray = results.faceLandmarks[0];
+
+      if (state.debugMode) drawDebugLandmarks(lmArray);
+
+      if (!state.faceDetected) {
+        state.faceDetected = true;
+        clearTimeout(state.faceLostTimer);
+        showNoFaceUI(false);
+        glassesGroup.visible = true;
+      }
+
+      // Pass both landmarks and transformation matrix for rock-solid stability
+      const matrix = results.facialTransformationMatrixes?.[0]?.data || null;
+      onFaceResults(lmArray, matrix);
+
+    } else {
+      if (state.faceDetected) {
+        state.faceDetected = false;
+        state.faceLostTimer = setTimeout(() => {
+          showNoFaceUI(true);
+          glassesGroup.visible = false;
+        }, FACE_LOST_MS);
+      }
+      if (state.debugMode) {
+        el.debugCanvas.getContext('2d').clearRect(
+          0, 0, el.debugCanvas.width, el.debugCanvas.height
+        );
+      }
+    }
+  }
+
+  // Smooth lerp / slerp
+  glassesGroup.position.lerp(target.position, LERP_POS);
+  glassesGroup.scale.lerp(target.scale, LERP_SCALE);
+  glassesGroup.quaternion.slerp(target.quat, LERP_ROT);
+
   if (state.debugMode) {
     const info = renderer.info;
     el.triCount.textContent = info.render.triangles;
     el.objCount.textContent = info.render.calls;
   }
 
-  renderer.render(scene, camera);
+  renderer.render(scene, orthoCamera);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CAMERA INITIALIZATION
+// MEDIAPIPE — Tasks Vision FaceLandmarker
+// ─────────────────────────────────────────────────────────────────────────────
+async function initMediaPipe() {
+  if (!FaceLandmarker || !FilesetResolver) {
+    throw new Error('[VISAGE] MediaPipe tasks-vision modules failed to import.');
+  }
+
+  setLoadingText('Loading face tracking model…');
+
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+
+  state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath:
+        'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU',  // auto-falls back to CPU
+    },
+    runningMode:                        'VIDEO',
+    numFaces:                           1,
+    minFaceDetectionConfidence:         0.5,
+    minFacePresenceConfidence:          0.5,
+    minTrackingConfidence:              0.5,
+    outputFaceBlendshapes:              false,
+    outputFacialTransformationMatrixes: true,
+  });
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMERA
 // ─────────────────────────────────────────────────────────────────────────────
 async function startCamera() {
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  // Check that mediaDevices API is available (requires HTTPS or localhost)
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    const err = new Error('MediaDevices API unavailable — page must be served over HTTP/HTTPS, not file://');
+    err.name  = 'NotSupportedError';
+    return err;
+  }
+
+  // Pre-check permission state (Chrome/Edge only — won't prompt)
+  try {
+    const perm = await navigator.permissions.query({ name: 'camera' });
+    console.log(`[VISAGE] Camera permission state: ${perm.state}`);
+    if (perm.state === 'denied') {
+      const err = new Error('Camera permission is denied in browser settings');
+      err.name  = 'NotAllowedError';
+      return err;
+    }
+  } catch (_) { /* permissions API not supported — continue anyway */ }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: 'user',
-        width:      { ideal: 1280 },
-        height:     { ideal: 720 },
+        width:      { ideal: isMobile ? 720  : 1280 },
+        height:     { ideal: isMobile ? 1280 : 720  },
       },
       audio: false,
     });
-
-    state.cameraStream = stream;
+    state.cameraStream  = stream;
     el.webcam.srcObject = stream;
-
-    await new Promise((res) => { el.webcam.onloadedmetadata = res; });
+    await new Promise(res => { el.webcam.onloadedmetadata = res; });
     await el.webcam.play();
 
-    // Sync canvas sizes with video
-    const w = el.webcam.videoWidth  || window.innerWidth;
-    const h = el.webcam.videoHeight || window.innerHeight;
-    el.debugCanvas.width  = w;
-    el.debugCanvas.height = h;
-
-    return true;
+    el.debugCanvas.width  = el.webcam.videoWidth  || window.innerWidth;
+    el.debugCanvas.height = el.webcam.videoHeight || window.innerHeight;
+    return null;  // null = success
   } catch (err) {
-    console.error('[VISAGE] Camera error:', err);
-    return false;
+    console.error('[VISAGE] Camera error:', err.name, err.message);
+    return err;   // return the real DOMException
   }
 }
 
-// Offscreen canvas used to downsample video before sending to MediaPipe
-const mpCanvas  = document.createElement('canvas');
-const mpCtx     = mpCanvas.getContext('2d', { willReadFrequently: false });
-mpCanvas.width  = MP_PROCESS_W;
-mpCanvas.height = MP_PROCESS_H;
+// ─────────────────────────────────────────────────────────────────────────────
+// INDEXEDDB GLB CACHE
+// ─────────────────────────────────────────────────────────────────────────────
+function openIDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(IDB_DB_NAME, IDB_VERSION);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+        db.createObjectStore(IDB_STORE_NAME);
+      }
+    };
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
 
-async function startMpCamera() {
-  const mpInterval = Math.round(1000 / MEDIAPIPE_FPS);
-  let lastSend  = 0;
-  let isSending = false;   // guard: never queue more than one send
-  let rafHandle = null;
-  let running   = true;
+async function readFromIDB(db, key) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(IDB_STORE_NAME, 'readonly');
+    const req = tx.objectStore(IDB_STORE_NAME).get(key);
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
 
-  function sendFrame() {
-    if (!running) return;
-    const now = performance.now();
+async function writeToIDB(db, key, value) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+    const req = tx.objectStore(IDB_STORE_NAME).put(value, key);
+    req.onsuccess = () => res();
+    req.onerror   = e => rej(e.target.error);
+  });
+}
 
-    if (!isSending && now - lastSend >= mpInterval && el.webcam.readyState >= 2) {
-      lastSend  = now;
-      isSending = true;
-      // Draw 480×270 copy — 7× fewer pixels than 1280×720
-      mpCtx.drawImage(el.webcam, 0, 0, MP_PROCESS_W, MP_PROCESS_H);
-      // Fire and forget — results arrive async via onFaceMeshResults
-      faceMesh.send({ image: mpCanvas }).finally(() => { isSending = false; });
-    }
+// Export a Three.js Group to a GLB ArrayBuffer
+function exportToGLB(group) {
+  return new Promise((res, rej) => {
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      group,
+      (glb) => res(glb),
+      (err) => rej(err),
+      { binary: true }
+    );
+  });
+}
 
-    rafHandle = requestAnimationFrame(sendFrame);
+// ─────────────────────────────────────────────────────────────────────────────
+// GLB LOADER (DracoLoader + runtime bake cache)
+// ─────────────────────────────────────────────────────────────────────────────
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+dracoLoader.preload();
+
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+let idb = null;
+
+async function getIDB() {
+  if (!idb) idb = await openIDB().catch(() => null);
+  return idb;
+}
+
+async function loadGlassesModel(entry) {
+  const cacheKey = `glb_v${IDB_VERSION}_${entry.id}`;
+
+  // 1. In-memory cache (fastest)
+  if (modelCache.has(entry.id)) return modelCache.get(entry.id).clone(true);
+
+  // 2. Try loading a real external GLB file first (if client provided one)
+  try {
+    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`);
+    modelCache.set(entry.id, gltf.scene);
+    return gltf.scene.clone(true);
+  } catch (err) {
+    console.warn(`[VISAGE] No external ${entry.id}.glb found, falling back to procedural cache.`);
   }
 
-  state.mpCamera = {
-    stop: () => {
-      running = false;
-      if (rafHandle) cancelAnimationFrame(rafHandle);
-    },
-  };
+  // 3. IndexedDB GLB cache (fast — avoids re-building geometry)
+  const db = await getIDB();
+  if (db) {
+    const cached = await readFromIDB(db, cacheKey);
+    if (cached) {
+      const model = await parseGLB(cached);
+      modelCache.set(entry.id, model);
+      return model.clone(true);
+    }
+  }
 
-  sendFrame();
+  // 3. Build procedural geometry, bake to GLB, store in IDB
+  setLoadingText(`Building ${entry.name} frame…`);
+  const group = buildProceduralFrame(entry);
+
+  // Bake & cache async (don't block render)
+  if (db) {
+    exportToGLB(group).then(glb => {
+      writeToIDB(db, cacheKey, glb).catch(() => {});
+    }).catch(() => {});
+  }
+
+  modelCache.set(entry.id, group);
+  return group.clone(true);
+}
+
+function parseGLB(arrayBuffer) {
+  return new Promise((res, rej) => {
+    gltfLoader.parse(arrayBuffer, '', gltf => res(gltf.scene), rej);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCEDURAL FRAME BUILDER
+// High-fidelity, real-world frame profiles using ExtrudeGeometry + TubeGeometry
+// ─────────────────────────────────────────────────────────────────────────────
+function buildProceduralFrame(entry) {
+  const { color, style } = entry;
+  const group = new THREE.Group();
+
+  const metalMat = new THREE.MeshStandardMaterial({
+    color:     (style === 'clubmaster' || style === 'aviator') ? 0xd4af37 : color,
+    metalness: 0.95,
+    roughness: 0.15,
+    envMapIntensity: 1.2,
+  });
+
+  const plasticMat = new THREE.MeshStandardMaterial({
+    color:     color,
+    metalness: 0.05,
+    roughness: 0.28,
+    envMapIntensity: 0.6,
+  });
+
+  const metalGeos   = [];
+  const plasticGeos = [];
+
+  function pushGeo(target, geo, matrix) {
+    if (matrix) geo.applyMatrix4(matrix);
+    target.push(geo.index ? geo.toNonIndexed() : geo);
+  }
+
+  // ── Rounded rectangle rim shape (Wayfarer / Wayfarer-half)
+  function makeRimShape(w, h, r, half = false) {
+    const shape = new THREE.Shape();
+    shape.moveTo(-w/2 + r, h/2);
+    shape.lineTo( w/2 - r, h/2);
+    shape.quadraticCurveTo(w/2, h/2, w/2, h/2 - r);
+    if (half) {
+      shape.lineTo(w/2, 0);
+      shape.lineTo(-w/2, 0);
+    } else {
+      shape.lineTo(w/2, -h/2 + r);
+      shape.quadraticCurveTo(w/2, -h/2, w/2 - r, -h/2);
+      shape.lineTo(-w/2 + r, -h/2);
+      shape.quadraticCurveTo(-w/2, -h/2, -w/2, -h/2 + r);
+    }
+    shape.lineTo(-w/2, h/2 - r);
+    shape.quadraticCurveTo(-w/2, h/2, -w/2 + r, h/2);
+
+    const inset = 0.022;
+    const hw = w - inset, hh = (half ? h * 0.5 : h) - inset, hr = Math.max(r - 0.006, 0.004);
+    const hole = new THREE.Path();
+    hole.moveTo(-hw/2 + hr, half ? hh : hh/2);
+    hole.lineTo( hw/2 - hr, half ? hh : hh/2);
+    hole.quadraticCurveTo(hw/2, half ? hh : hh/2, hw/2, (half ? hh : hh/2) - hr);
+    if (half) {
+      hole.lineTo(hw/2, 0);
+      hole.lineTo(-hw/2, 0);
+    } else {
+      hole.lineTo(hw/2, -hh/2 + hr);
+      hole.quadraticCurveTo(hw/2, -hh/2, hw/2 - hr, -hh/2);
+      hole.lineTo(-hw/2 + hr, -hh/2);
+      hole.quadraticCurveTo(-hw/2, -hh/2, -hw/2, -hh/2 + hr);
+    }
+    hole.lineTo(-hw/2, (half ? hh : hh/2) - hr);
+    hole.quadraticCurveTo(-hw/2, half ? hh : hh/2, -hw/2 + hr, half ? hh : hh/2);
+    shape.holes.push(hole);
+    return shape;
+  }
+
+  function extrudeRim(shape, depth = 0.013, bevel = 0.003) {
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth, bevelEnabled: true, bevelSegments: 3,
+      steps: 1, bevelSize: bevel, bevelThickness: bevel,
+    });
+    geo.translate(0, 0, -depth / 2);
+    return geo;
+  }
+
+  // ── Arm curve (both sides)
+  function makeArm(side, radius) {
+    const sx = side * 0.27;
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(sx,         0.02,  0.00),
+      new THREE.Vector3(sx * 1.04,  0.02, -0.06),
+      new THREE.Vector3(sx * 1.04,  0.02, -0.22),
+      new THREE.Vector3(sx * 1.00, -0.04, -0.32),
+    ]);
+    return new THREE.TubeGeometry(curve, 24, radius, 8, false);
+  }
+
+  // ── Bridge
+  function makeBridge(radius) {
+    const curve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(-0.088, 0.013, 0),
+      new THREE.Vector3(0,      0.038, 0.015),
+      new THREE.Vector3( 0.088, 0.013, 0)
+    );
+    return new THREE.TubeGeometry(curve, 12, radius, 8, false);
+  }
+
+  // ── Build by style
+  if (style === 'wayfarer') {
+    const shape = makeRimShape(0.185, 0.13, 0.022);
+    const rimL  = extrudeRim(shape, 0.014, 0.004);
+    pushGeo(plasticGeos, rimL, new THREE.Matrix4().makeTranslation(-0.175, 0, 0));
+    pushGeo(plasticGeos, rimL.clone(), new THREE.Matrix4().makeTranslation(0.175, 0, 0));
+    pushGeo(plasticGeos, makeBridge(0.009), null);
+    pushGeo(plasticGeos, makeArm(-1, 0.011), null);
+    pushGeo(plasticGeos, makeArm( 1, 0.011), null);
+
+  } else if (style === 'clubmaster') {
+    // Top plastic brow
+    const topShape  = makeRimShape(0.185, 0.13, 0.022, true);
+    const topRimL   = extrudeRim(topShape, 0.014, 0.004);
+    topRimL.translate(0, -0.065, 0);  // shift so flat edge aligns with center
+    pushGeo(plasticGeos, topRimL, new THREE.Matrix4().makeTranslation(-0.175, 0.065, 0));
+    pushGeo(plasticGeos, topRimL.clone(), new THREE.Matrix4().makeTranslation(0.175, 0.065, 0));
+
+    // Bottom metal wire rim (half torus)
+    const wireL = new THREE.TorusGeometry(0.072, 0.005, 12, 32, Math.PI);
+    wireL.rotateZ(Math.PI);
+    wireL.scale(1.2, 0.9, 1);
+    wireL.translate(0, 0.005, 0);
+    pushGeo(metalGeos, wireL, new THREE.Matrix4().makeTranslation(-0.175, 0, 0));
+    pushGeo(metalGeos, wireL.clone(), new THREE.Matrix4().makeTranslation(0.175, 0, 0));
+
+    pushGeo(metalGeos, makeBridge(0.005), null);
+    pushGeo(plasticGeos, makeArm(-1, 0.01), null);
+    pushGeo(plasticGeos, makeArm( 1, 0.01), null);
+
+  } else if (style === 'aviator') {
+    // Double-wire teardrop torus
+    const outer = new THREE.TorusGeometry(0.094, 0.005, 16, 48);
+    outer.scale(0.85, 1.18, 1);
+    const inner = new THREE.TorusGeometry(0.083, 0.003, 12, 40);
+    inner.scale(0.85, 1.18, 1);
+    pushGeo(metalGeos, outer, new THREE.Matrix4().makeTranslation(-0.175, 0, 0));
+    pushGeo(metalGeos, outer.clone(), new THREE.Matrix4().makeTranslation(0.175, 0, 0));
+    pushGeo(metalGeos, inner, new THREE.Matrix4().makeTranslation(-0.175, 0, 0));
+    pushGeo(metalGeos, inner.clone(), new THREE.Matrix4().makeTranslation(0.175, 0, 0));
+
+    // Nose pads
+    const padGeo = new THREE.SphereGeometry(0.009, 8, 6);
+    const padCurve = new THREE.QuadraticBezierCurve3(
+      new THREE.Vector3(-0.045, -0.01, 0.01),
+      new THREE.Vector3(0,       0.03,  0.04),
+      new THREE.Vector3( 0.045, -0.01, 0.01)
+    );
+    const padBridge = new THREE.TubeGeometry(padCurve, 10, 0.003, 6, false);
+    pushGeo(metalGeos, padBridge, null);
+    pushGeo(metalGeos, padGeo, new THREE.Matrix4().makeTranslation(-0.052, -0.02, 0.01));
+    pushGeo(metalGeos, padGeo.clone(), new THREE.Matrix4().makeTranslation( 0.052, -0.02, 0.01));
+    pushGeo(metalGeos, makeArm(-1, 0.005), null);
+    pushGeo(metalGeos, makeArm( 1, 0.005), null);
+
+  } else { // round
+    const rim = new THREE.TorusGeometry(0.082, 0.007, 16, 48);
+    pushGeo(metalGeos, rim, new THREE.Matrix4().makeTranslation(-0.175, 0, 0));
+    pushGeo(metalGeos, rim.clone(), new THREE.Matrix4().makeTranslation(0.175, 0, 0));
+    pushGeo(metalGeos, makeBridge(0.005), null);
+    pushGeo(metalGeos, makeArm(-1, 0.005), null);
+    pushGeo(metalGeos, makeArm( 1, 0.005), null);
+  }
+
+  // Merge & add frame meshes
+  function addMerged(geos, mat) {
+    if (!geos.length) return;
+    try {
+      const merged = BufferGeometryUtils.mergeGeometries(geos, false);
+      group.add(new THREE.Mesh(merged, mat));
+    } catch (_) {
+      geos.forEach(g => group.add(new THREE.Mesh(g, mat)));
+    }
+  }
+  addMerged(metalGeos,   metalMat);
+  addMerged(plasticGeos, plasticMat);
+
+  // ── Lens fills (MeshPhysicalMaterial — real glass)
+  const lensMat = new THREE.MeshPhysicalMaterial({
+    color:        0x0a0a14,
+    transmission: 0.92,
+    opacity:      1,
+    transparent:  true,
+    roughness:    0.04,
+    ior:          1.52,
+    thickness:    0.025,
+    side:         THREE.DoubleSide,
+    envMapIntensity: 0.8,
+  });
+
+  let fillGeo;
+  if (style === 'round') {
+    fillGeo = new THREE.CircleGeometry(0.079, 40);
+  } else if (style === 'aviator') {
+    fillGeo = new THREE.CircleGeometry(0.088, 40);
+    fillGeo.scale(0.85, 1.18, 1);
+  } else if (style === 'clubmaster') {
+    fillGeo = new THREE.CircleGeometry(0.072, 40);
+    fillGeo.scale(1.2, 0.9, 1);
+  } else { // wayfarer
+    fillGeo = new THREE.PlaneGeometry(0.163, 0.12, 1, 1);
+  }
+
+  const lFill = new THREE.Mesh(fillGeo, lensMat);
+  const rFill = new THREE.Mesh(fillGeo.clone(), lensMat);
+  lFill.position.set(-0.175, 0, -0.001);
+  rFill.position.set( 0.175, 0, -0.001);
+  group.add(lFill, rFill);
+
+  return group;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GLASSES MANAGEMENT
+// ─────────────────────────────────────────────────────────────────────────────
+async function setActiveGlasses(id) {
+  const entry = GLASSES_CATALOG.find(g => g.id === id);
+  if (!entry) return;
+  state.currentGlassesId = id;
+
+  document.querySelectorAll('.glasses-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.id === id);
+  });
+
+  clearGlassesGroup();
+  showLoading(true);
+
+  const model = await loadGlassesModel(entry);
+  glassesGroup.add(model);
+
+  showLoading(false);
+}
+
+function clearGlassesGroup() {
+  // Remove without disposing (cache owns the geometry)
+  while (glassesGroup.children.length) {
+    glassesGroup.remove(glassesGroup.children[0]);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Maps a DOMException from getUserMedia to a user-friendly error screen
+function showCameraError(err) {
+  const name = err?.name || 'UnknownError';
+  const url  = window.location.href;
+  const isHTTP = url.startsWith('http://') || url.startsWith('https://');
+
+  const configs = {
+    NotAllowedError: {
+      icon:  '🛋️',
+      title: 'Camera Permission Denied',
+      sub:   'You blocked camera access. Grant permission and try again.',
+      steps: [
+        'Chrome/Edge: Click the 🔒 lock icon in the address bar → Camera → Allow',
+        'Firefox: Click the camera icon in the address bar → Allow',
+        'Safari: Settings → Safari → Camera → Allow for this site',
+      ],
+    },
+    NotFoundError: {
+      icon:  '📷',
+      title: 'No Camera Found',
+      sub:   'No camera device was detected on this device.',
+      steps: [
+        'Make sure a camera is connected or enabled',
+        'Check Device Manager / System Preferences for camera drivers',
+        'Try a different browser',
+      ],
+    },
+    NotReadableError: {
+      icon:  '🔄',
+      title: 'Camera In Use',
+      sub:   'Another app is already using your camera.',
+      steps: [
+        'Close other tabs or apps using the camera (Zoom, Teams, Meet, etc.)',
+        'Reload this page and try again',
+      ],
+    },
+    OverconstrainedError: {
+      icon:  '⚠️',
+      title: 'Camera Unavailable',
+      sub:   'Could not access a suitable camera with the required settings.',
+      steps: [
+        'Try a different browser',
+        'Update your camera drivers',
+      ],
+    },
+    NotSupportedError: {
+      icon:  '🔒',
+      title: 'Secure Context Required',
+      sub:   !isHTTP
+        ? 'Camera requires a secure connection (HTTPS or localhost).'
+        : 'Your browser does not support the camera API.',
+      steps: !isHTTP
+        ? [
+            'Open the app via http://localhost (not file://)',
+            'Or deploy to an HTTPS host',
+          ]
+        : ['Try Chrome, Edge, or Firefox'],
+    },
+  };
+
+  const cfg = configs[name] || {
+    icon:  '⚠️',
+    title: 'Camera Error',
+    sub:   `${name}: ${err?.message || 'Unknown error'}`,
+    steps: ['Reload the page and try again', 'Try a different browser'],
+  };
+
+  el.errorIcon.textContent  = cfg.icon;
+  el.errorTitle.textContent = cfg.title;
+  el.errorSub.textContent   = cfg.sub;
+  el.errorSteps.innerHTML   = cfg.steps
+    .map(s => `<p class="error-step">‣ ${s}</p>`)
+    .join('');
+
+  showOverlay('errorScreen', true);
+}
+function setLoadingText(txt) {
+  if (el.loadingText) el.loadingText.textContent = txt;
+}
+
 function showOverlay(id, visible) {
   const elem = document.getElementById(id);
   if (!elem) return;
-  elem.classList.toggle('active', visible);
-  elem.classList.toggle('hidden', !visible && !elem.classList.contains('active'));
   if (visible) {
     elem.classList.remove('hidden');
-    // Force reflow to trigger transition
     void elem.offsetWidth;
     elem.classList.add('active');
   } else {
@@ -660,30 +960,24 @@ function showLoading(visible) {
 }
 
 function showAppUI(visible) {
-  const uiEls = [el.appHeader, el.glassesPanel, el.actionButtons];
-  uiEls.forEach(e => {
-    if (visible) {
-      e.classList.remove('hidden');
-    } else {
-      e.classList.add('hidden');
-    }
+  [el.appHeader, el.glassesPanel, el.actionButtons].forEach(e => {
+    e?.classList.toggle('hidden', !visible);
   });
 }
 
 function showNoFaceUI(visible) {
-  el.noFaceLabel.classList.toggle('hidden', !visible);
-  el.noFaceBorder.classList.toggle('hidden', !visible);
+  el.noFaceLabel?.classList.toggle('hidden', !visible);
+  el.noFaceBorder?.classList.toggle('hidden', !visible);
 }
 
 function buildGlassesSelector() {
   el.glassesRow.innerHTML = '';
-
   GLASSES_CATALOG.forEach(entry => {
-    const card = document.createElement('button');
-    card.className  = 'glasses-card' + (entry.id === state.currentGlassesId ? ' active' : '');
-    card.dataset.id = entry.id;
-    card.innerHTML  = `
-      <span class="card-thumb">${entry.thumbnail}</span>
+    const card       = document.createElement('button');
+    card.className   = 'glasses-card' + (entry.id === state.currentGlassesId ? ' active' : '');
+    card.dataset.id  = entry.id;
+    card.innerHTML   = `
+      <span class="card-thumb">${entry.emoji}</span>
       <span class="card-name">${entry.name}</span>
     `;
     card.addEventListener('click', () => setActiveGlasses(entry.id));
@@ -698,23 +992,29 @@ function capturePhoto() {
   const w = el.webcam.videoWidth  || window.innerWidth;
   const h = el.webcam.videoHeight || window.innerHeight;
 
-  const offscreen = document.createElement('canvas');
-  offscreen.width  = w;
-  offscreen.height = h;
-  const ctx = offscreen.getContext('2d');
+  const canvas = document.createElement('canvas');
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const ctx = canvas.getContext('2d');
 
-  // Mirror flip for video
+  // Mirrored video
   ctx.save();
-  ctx.translate(w, 0);
+  ctx.translate(canvas.width, 0);
   ctx.scale(-1, 1);
-  ctx.drawImage(el.webcam, 0, 0, w, h);
+
+  // Letterbox-aware draw (match object-fit:cover)
+  const wAsp = canvas.width / canvas.height;
+  const vAsp = w / h;
+  const sc   = wAsp > vAsp ? canvas.width / w : canvas.height / h;
+  const dx   = (canvas.width  - w * sc) / 2;
+  const dy   = (canvas.height - h * sc) / 2;
+  ctx.drawImage(el.webcam, dx, dy, w * sc, h * sc);
   ctx.restore();
 
-  // Draw Three.js overlay
-  ctx.drawImage(el.threeCanvas, 0, 0, w, h);
+  // Three.js overlay
+  ctx.drawImage(el.threeCanvas, 0, 0);
 
-  // Trigger download
-  offscreen.toBlob(blob => {
+  canvas.toBlob(blob => {
     const url  = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href     = url;
@@ -723,7 +1023,7 @@ function capturePhoto() {
     URL.revokeObjectURL(url);
   }, 'image/png');
 
-  // Shutter flash effect
+  // Shutter flash
   el.shutterFlash.classList.remove('hidden');
   el.shutterFlash.classList.add('flashing');
   setTimeout(() => {
@@ -733,46 +1033,48 @@ function capturePhoto() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STOP & RESET
+// STOP / RESET
 // ─────────────────────────────────────────────────────────────────────────────
 function stopCamera() {
-  if (state.mpCamera) {
-    state.mpCamera.stop();
-    state.mpCamera = null;
-  }
+  state.isRunning    = false;
+  state.faceDetected = false;
+  clearTimeout(state.faceLostTimer);
+
   if (state.cameraStream) {
     state.cameraStream.getTracks().forEach(t => t.stop());
     state.cameraStream = null;
   }
   el.webcam.srcObject = null;
-  state.isRunning = false;
 
   glassesGroup.visible = false;
+  // Reset scale target so there's no pop when next session starts
+  target.scale.set(0.001, 0.001, 0.001);
+
   showNoFaceUI(false);
   showAppUI(false);
   showOverlay('startScreen', true);
+  // Do NOT restart the rAF loop — it never stopped (animate() runs continuously)
 }
 
 function resetGlasses() {
   glassesGroup.position.set(0, 0, 0);
   glassesGroup.scale.setScalar(1);
   glassesGroup.quaternion.identity();
-  // Reload current glasses
   setActiveGlasses(state.currentGlassesId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG TOGGLE
+// DEBUG
 // ─────────────────────────────────────────────────────────────────────────────
 function toggleDebug() {
   state.debugMode = !state.debugMode;
-  el.debugCanvas.style.display  = state.debugMode ? 'block' : 'none';
+  el.debugCanvas.style.display = state.debugMode ? 'block' : 'none';
   el.debugStats.classList.toggle('hidden', !state.debugMode);
   el.debugBadge.classList.toggle('hidden', !state.debugMode);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI HANDLERS
+// EVENT HANDLERS
 // ─────────────────────────────────────────────────────────────────────────────
 function bindUIHandlers() {
   el.startBtn.addEventListener('click', onStartClick);
@@ -780,52 +1082,47 @@ function bindUIHandlers() {
   el.captureBtn.addEventListener('click', capturePhoto);
   el.resetBtn.addEventListener('click', resetGlasses);
   el.stopBtn.addEventListener('click', stopCamera);
-
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', e => {
     if (e.key.toLowerCase() === DEBUG_KEY) toggleDebug();
   });
 }
 
 async function onStartClick() {
-  // Hide start / error screens
   showOverlay('startScreen', false);
   showOverlay('errorScreen', false);
-
-  // Show loading
   showLoading(true);
 
-  // Start camera
-  const cameraOk = await startCamera();
-  if (!cameraOk) {
+  const cameraErr = await startCamera();
+  if (cameraErr) {
     showLoading(false);
-    showOverlay('errorScreen', true);
+    showCameraError(cameraErr);
     return;
   }
 
-  // Initialize MediaPipe (re-use if already initialized)
-  if (!faceMesh) {
+  if (!state.faceLandmarker) {
     try {
       await initMediaPipe();
     } catch (err) {
       console.error('[VISAGE] MediaPipe init failed:', err);
       showLoading(false);
+      
+      // Update the error screen to show it's a MediaPipe error, not a camera error
+      el.errorIcon.textContent  = '🛑';
+      el.errorTitle.textContent = 'AI Model Failed to Load';
+      el.errorSub.textContent   = err.message;
+      el.errorSteps.innerHTML   = '<p class="error-step">‣ Check your internet connection</p><p class="error-step">‣ Try a different browser</p>';
+      
       showOverlay('errorScreen', true);
       return;
     }
   }
 
-  // Load default glasses
   buildGlassesSelector();
   await setActiveGlasses(state.currentGlassesId);
-
-  // Start MediaPipe camera feed
-  await startMpCamera();
 
   state.isRunning = true;
   showLoading(false);
   showAppUI(true);
-
-  // Initially show no-face UI until detected
   showNoFaceUI(true);
 }
 
@@ -835,26 +1132,26 @@ async function onStartClick() {
 function init() {
   initThree();
   bindUIHandlers();
-  animate();
 
-  // Hide debug canvas initially
   el.debugCanvas.style.display = 'none';
 
-  // Expose debug object
-  window.VirtualTryOn = {
-    state,
-    target,
-    modelCache,
-    scene,
-    renderer,
-    camera,
-    glassesGroup,
-    toggleDebug,
-    setActiveGlasses,
-    GLASSES_CATALOG,
-  };
+  // Startup diagnostics — confirm new code is loaded
+  console.group('[VISAGE] v4 — Startup Diagnostics');
+  console.log('URL:', window.location.href);
+  console.log('mediaDevices:', !!navigator.mediaDevices);
+  console.log('getUserMedia:', !!(navigator.mediaDevices?.getUserMedia));
+  console.log('isSecureContext:', window.isSecureContext);
+  navigator.permissions?.query({ name: 'camera' })
+    .then(p => console.log('Camera permission:', p.state))
+    .catch(() => console.log('Camera permission: query not supported'));
+  console.groupEnd();
 
-  console.log('[VISAGE] Ready. Press "D" to toggle debug mode.');
+  // Idle render loop (shows start screen, no tracking)
+  animate();
+
+  // Expose for debugging
+  window.VISAGE = { state, target, modelCache, scene, renderer, camera: orthoCamera, glassesGroup, toggleDebug, setActiveGlasses, GLASSES_CATALOG };
+  console.log('[VISAGE] Ready — MediaPipe Tasks Vision + Three.js DracoLoader stack. Press "D" for debug.');
 }
 
 init();

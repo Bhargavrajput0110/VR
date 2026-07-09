@@ -2,9 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <!-- Mobile-optimised viewport: prevent user scaling, fix iOS bounce -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0d0d0d" />
   <title>VISAGE — Virtual Try-On</title>
-  <meta name="description" content="Try on premium glasses frames in real time using your camera. Powered by MediaPipe face tracking and Three.js 3D rendering." />
+  <meta name="description" content="Try on premium glasses frames in real time using your camera. Powered by MediaPipe Face Mesh and Three.js 3D rendering." />
 
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -12,9 +19,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
 
   <!-- Stylesheet -->
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=4" />
 
-  <!-- Three.js Import Map -->
+  <!-- Three.js + DracoLoader Import Map -->
   <script type="importmap">
   {
     "imports": {
@@ -45,7 +52,7 @@
   <div id="loadingScreen" class="overlay">
     <div class="loading-content">
       <div class="spinner"></div>
-      <p class="loading-text">Initializing face tracking…</p>
+      <p class="loading-text" id="loadingText">Initializing face tracking…</p>
     </div>
   </div>
 
@@ -70,10 +77,11 @@
   <!-- ═══════════════════════════ CAMERA ERROR ════════════════════════════ -->
   <div id="errorScreen" class="overlay hidden">
     <div class="error-content">
-      <div class="error-icon">⚠</div>
-      <h3 class="error-title">Camera Access Blocked</h3>
-      <p class="error-sub">Please allow camera permissions in your browser settings to use Virtual Try-On.</p>
-      <button id="retryBtn" class="btn-primary">Enable Camera</button>
+      <div class="error-icon" id="errorIcon">⚠</div>
+      <h3 class="error-title" id="errorTitle">Camera Access Blocked</h3>
+      <p class="error-sub" id="errorSub">Please allow camera permissions in your browser settings.</p>
+      <div class="error-steps" id="errorSteps"></div>
+      <button id="retryBtn" class="btn-primary">Try Again</button>
     </div>
   </div>
 
@@ -133,12 +141,10 @@
     <span>OBJ <span id="objCount">0</span></span>
   </div>
 
-  <!-- MediaPipe CDN (non-module scripts loaded before app) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <!-- ═══════════════════════════ SCRIPTS ════════════════════════════ -->
+  <!-- MediaPipe Tasks Vision imported as ES Module in app.js -->
 
-  <!-- App entry point -->
-  <script type="module" src="app.js"></script>
+  <!-- App entry point (ES Module) -->
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
