@@ -571,13 +571,13 @@ async function loadGlassesModel(entry) {
   // 1. In-memory cache (fastest)
   if (modelCache.has(entry.id)) return modelCache.get(entry.id).clone(true);
 
-  // 2. Try loading a real external GLB file first (if client provided one)
+  // 2. Try loading a real external GLB/GLTF file first (if client provided one)
   try {
-    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`);
+    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`).catch(() => gltfLoader.loadAsync(`${entry.id}.gltf`));
     modelCache.set(entry.id, gltf.scene);
     return gltf.scene.clone(true);
   } catch (err) {
-    console.warn(`[VISAGE] No external ${entry.id}.glb found, falling back to procedural cache.`);
+    console.warn(`[VISAGE] No external ${entry.id}.glb or .gltf found, falling back to procedural cache.`);
   }
 
   // 3. IndexedDB GLB cache (fast — avoids re-building geometry)
