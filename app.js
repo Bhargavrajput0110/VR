@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 8;     // bump to invalidate old cache
+const IDB_VERSION      = 3;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -254,8 +254,8 @@ function landmarkToWorld(lm) {
   const offX = (w - rvw) / 2;
   const offY = (h - rvh) / 2;
 
-  // Pure unmirrored mapping (CSS handles the final visual mirroring)
-  const px = offX + lm.x * rvw;
+  // Mirror X (front camera is mirrored in CSS with scaleX(-1))
+  const px = offX + (1.0 - lm.x) * rvw;
   const py = offY + lm.y * rvh;
 
   const halfH  = 1.0;
@@ -267,44 +267,33 @@ function landmarkToWorld(lm) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD POSE — Bulletproof Vector Basis Solver (Pure Unmirrored Space)
+// HEAD POSE — Extracted directly from Google's optimized facial transform matrix
 // ─────────────────────────────────────────────────────────────────────────────
-function solvePoseFromLandmarks(lmArray) {
-  // Convert MediaPipe coords to pure WebGL space
-  function toVec(lm) {
-    // Unmirrored X: 2*x - 1. Screen Y: 1 - 2*y. 
-    return new THREE.Vector3(
-      2.0 * lm.x - 1.0, 
-      1.0 - 2.0 * lm.y, 
-      -lm.z * 3.0 
-    );
-  }
-
-  const le = toVec(lmArray[LM.L_EYE_OUTER]);
-  const re = toVec(lmArray[LM.R_EYE_OUTER]);
-  const nose = toVec(lmArray[LM.NOSE_TIP]);
-
-  // X-axis: Points from Left Eye (smaller X) to Right Eye (larger X) in unmirrored space.
-  const xAxis = new THREE.Vector3().subVectors(re, le).normalize();
-
-  // Y-axis: Points from Nose up to the center of the eyes.
-  const eyeCenter = new THREE.Vector3().addVectors(le, re).multiplyScalar(0.5);
-  const yAxis = new THREE.Vector3().subVectors(eyeCenter, nose).normalize();
-
-  // Z-axis: Orthogonal to face plane (pointing out of screen).
-  const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
-
-  // Gram-Schmidt orthogonalization to ensure perfectly rigid 90-degree axes
-  yAxis.crossVectors(zAxis, xAxis).normalize();
-
-  const mat = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+function extractRotationFromMatrix(matrixArray) {
+  // MediaPipe provides a 4x4 column-major matrix
+  const mat = new THREE.Matrix4().fromArray(matrixArray);
   
-  // The glasses geometry might have a slight natural downward tilt based on bridge model.
-  // We apply a slight pitch correction to keep them parallel to the eyes.
-  const tiltFix = new THREE.Matrix4().makeRotationX(-0.15);
-  mat.multiply(tiltFix);
-
-  return new THREE.Quaternion().setFromRotationMatrix(mat);
+  // Extract the raw rotation (which assumes an unmirrored camera)
+  // We must decompose the matrix because MediaPipe includes scaling and translation in it
+  const position = new THREE.Vector3();
+  const rawQuat = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  mat.decompose(position, rawQuat, scale);
+  
+  // Convert to Euler angles to fix the mirroring
+  const euler = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
+  
+  // Because our webcam video is mirrored horizontally via CSS/coords,
+  // we must invert Yaw (Y axis) and Roll (Z axis).
+  // Pitch (X axis) remains correct because looking up/down is unaffected by horizontal mirroring.
+  const mirroredEuler = new THREE.Euler(
+    euler.x,     // Pitch (keep)
+    -euler.y,    // Yaw (invert)
+    -euler.z,    // Roll (invert)
+    'XYZ'
+  );
+  
+  return new THREE.Quaternion().setFromEuler(mirroredEuler);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -315,27 +304,23 @@ function onFaceResults(lmArray, transformMatrix) {
   const re = landmarkToWorld(lmArray[LM.R_EYE_OUTER]);
   const nb = landmarkToWorld(lmArray[LM.NOSE_BRIDGE]);
 
-  // Center between eyes
+  // Center between eyes, pushed slightly toward nose bridge
   const center = new THREE.Vector3()
     .addVectors(le, re)
     .multiplyScalar(0.5);
-    
-  const eyeDist  = le.distanceTo(re);
-
-  // Geometric centers of 3D glasses often sit too high because the arms dip down behind the ears.
-  // We apply a downward physical offset to snap them from the forehead down to the eyes.
-  center.y -= eyeDist * 0.25;
+  center.y += (nb.y - center.y) * 0.35;
 
   target.position.copy(center);
 
-  // Scale: inter-eye distance (in World Coordinates) × constant
-  const sf = Math.max(eyeDist * 2.1, 0.01);
-  
-  // Standard uniform scale (Right-Handed) — CSS scaleX(-1) handles mirroring for us!
+  // Scale: inter-eye distance × constant
+  const eyeDist  = le.distanceTo(re);
+  const sf       = Math.max(eyeDist * 2.1, 0.01);
   target.scale.setScalar(sf);
 
-  // Apply highly-stable rotation derived directly from exact screen landmarks
-  target.quat.slerp(solvePoseFromLandmarks(lmArray), 0.5);
+  // Apply highly-stable rotation from Google's internal solver
+  if (transformMatrix) {
+    target.quat.copy(extractRotationFromMatrix(transformMatrix));
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -580,6 +565,27 @@ async function getIDB() {
   return idb;
 }
 
+// Automatically centers and normalizes scale of external models (e.g. from Sketchfab/Spline)
+function normalizeModel(scene) {
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+
+  // Center the geometry
+  const wrapper = new THREE.Group();
+  scene.position.x = -center.x;
+  scene.position.y = -center.y;
+  scene.position.z = -center.z;
+  
+  // Scale the scene so its total width matches our procedural glasses (~0.53 units)
+  const targetWidth = 0.53;
+  const scale = targetWidth / size.x;
+  scene.scale.setScalar(scale);
+
+  wrapper.add(scene);
+  return wrapper;
+}
+
 async function loadGlassesModel(entry) {
   const cacheKey = `glb_v${IDB_VERSION}_${entry.id}`;
 
@@ -589,38 +595,9 @@ async function loadGlassesModel(entry) {
   // 2. Try loading a real external GLB/GLTF file first (if client provided one)
   try {
     const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`).catch(() => gltfLoader.loadAsync(`${entry.id}.gltf`));
-    const model = gltf.scene;
-
-    // Normalize external models: they often have random sizes/origins
-    // IMPORTANT: We MUST only measure Meshes. Sketchfab models often include
-    // distant cameras or lights that completely destroy the bounding box.
-    const box = new THREE.Box3();
-    model.updateMatrixWorld(true);
-    model.traverse((child) => {
-      if (child.isMesh) {
-        box.expandByObject(child);
-      }
-    });
-    
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-
-    // Center the model's geometry
-    model.position.sub(center);
-
-    // Create a wrapper to scale the model width to exactly 1.0 unit
-    const wrapper = new THREE.Group();
-    const uniformScale = 1.0 / Math.max(size.x, 0.001);
-    
-    // External models usually face +Y natively, which becomes +Z after loaders. 
-    // We apply a 180 rotation so the arms face the face, not the camera.
-    model.rotation.y = Math.PI;
-    
-    wrapper.scale.setScalar(uniformScale);
-    wrapper.add(model);
-
-    modelCache.set(entry.id, wrapper);
-    return wrapper.clone(true);
+    const normalized = normalizeModel(gltf.scene);
+    modelCache.set(entry.id, normalized);
+    return normalized.clone(true);
   } catch (err) {
     console.warn(`[VISAGE] No external ${entry.id}.glb or .gltf found, falling back to procedural cache.`);
   }
@@ -865,12 +842,6 @@ function buildProceduralFrame(entry) {
   lFill.position.set(-0.175, 0, -0.001);
   rFill.position.set( 0.175, 0, -0.001);
   group.add(lFill, rFill);
-
-  // Normalize procedural glasses width to exactly 1.0 so `sf` scaling works perfectly
-  const box = new THREE.Box3().setFromObject(group);
-  const size = box.getSize(new THREE.Vector3());
-  const uniformScale = 1.0 / Math.max(size.x, 0.001);
-  group.scale.setScalar(uniformScale);
 
   return group;
 }
