@@ -574,8 +574,28 @@ async function loadGlassesModel(entry) {
   // 2. Try loading a real external GLB/GLTF file first (if client provided one)
   try {
     const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`).catch(() => gltfLoader.loadAsync(`${entry.id}.gltf`));
-    modelCache.set(entry.id, gltf.scene);
-    return gltf.scene.clone(true);
+    const model = gltf.scene;
+
+    // Normalize external models: they often have random sizes/origins
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+
+    // Center the model's geometry
+    model.position.sub(center);
+
+    // Create a wrapper to scale the model width to exactly 1.0 unit
+    const wrapper = new THREE.Group();
+    const uniformScale = 1.0 / Math.max(size.x, 0.001);
+    
+    // Most sketchfab models face the wrong way, we apply a 180 rotation to face the camera
+    model.rotation.y = Math.PI; 
+    
+    wrapper.scale.setScalar(uniformScale);
+    wrapper.add(model);
+
+    modelCache.set(entry.id, wrapper);
+    return wrapper.clone(true);
   } catch (err) {
     console.warn(`[VISAGE] No external ${entry.id}.glb or .gltf found, falling back to procedural cache.`);
   }
