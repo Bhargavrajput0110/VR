@@ -622,16 +622,25 @@ function buildProceduralFrame(entry) {
 
   const metalMat = new THREE.MeshStandardMaterial({
     color:     (style === 'clubmaster' || style === 'aviator') ? 0xd4af37 : color,
-    metalness: 0.95,
-    roughness: 0.15,
+    metalness: 1.0,
+    roughness: 0.1,
+    envMapIntensity: 1.5,
+  });
+
+  const plasticMat = new THREE.MeshPhysicalMaterial({
+    color:     color,
+    metalness: 0.05,
+    roughness: 0.2,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.1,
     envMapIntensity: 1.2,
   });
 
-  const plasticMat = new THREE.MeshStandardMaterial({
-    color:     color,
-    metalness: 0.05,
-    roughness: 0.28,
-    envMapIntensity: 0.6,
+  const hardwareMat = new THREE.MeshStandardMaterial({
+    color: 0xeeeeee,
+    metalness: 1.0,
+    roughness: 0.2,
+    envMapIntensity: 1.5,
   });
 
   const metalGeos   = [];
@@ -681,10 +690,10 @@ function buildProceduralFrame(entry) {
     return shape;
   }
 
-  function extrudeRim(shape, depth = 0.013, bevel = 0.003) {
+  function extrudeRim(shape, depth = 0.005, bevel = 0.002) {
     const geo = new THREE.ExtrudeGeometry(shape, {
-      depth, bevelEnabled: true, bevelSegments: 3,
-      steps: 1, bevelSize: bevel, bevelThickness: bevel,
+      depth, bevelEnabled: true, bevelSegments: 4,
+      steps: 1, bevelSize: bevel, bevelThickness: bevel * 1.5,
     });
     geo.translate(0, 0, -depth / 2);
     return geo;
@@ -791,15 +800,16 @@ function buildProceduralFrame(entry) {
 
   // ── Lens fills (MeshPhysicalMaterial — real glass)
   const lensMat = new THREE.MeshPhysicalMaterial({
-    color:        0x0a0a14,
-    transmission: 0.92,
+    color:        0xffffff, // completely clear
+    transmission: 0.98,     // max transmission for glass
     opacity:      1,
     transparent:  true,
-    roughness:    0.04,
-    ior:          1.52,
-    thickness:    0.025,
+    roughness:    0.02,     // extremely smooth
+    ior:          1.52,     // index of refraction of glass
+    thickness:    0.015,    // 15mm apparent thickness for refraction
+    clearcoat:    1.0,      // extra sharp reflections
     side:         THREE.DoubleSide,
-    envMapIntensity: 0.8,
+    envMapIntensity: 1.5,
   });
 
   let fillGeo;
@@ -809,16 +819,33 @@ function buildProceduralFrame(entry) {
     fillGeo = new THREE.CircleGeometry(0.088, 40);
     fillGeo.scale(0.85, 1.18, 1);
   } else if (style === 'clubmaster') {
-    fillGeo = new THREE.CircleGeometry(0.072, 40);
-    fillGeo.scale(1.2, 0.9, 1);
+    const shape = makeRimShape(0.185, 0.13, 0.022, false);
+    fillGeo = new THREE.ShapeGeometry(shape);
+    fillGeo.scale(0.96, 0.96, 1);
   } else { // wayfarer
-    fillGeo = new THREE.PlaneGeometry(0.163, 0.12, 1, 1);
+    const shape = makeRimShape(0.185, 0.13, 0.022, false);
+    fillGeo = new THREE.ShapeGeometry(shape);
+    fillGeo.scale(0.96, 0.96, 1);
+  }
+
+  // ── Decorative Rivets (Hinges)
+  if (style === 'wayfarer' || style === 'clubmaster') {
+    const rivet = new THREE.CylinderGeometry(0.003, 0.003, 0.002, 16);
+    rivet.rotateX(Math.PI / 2);
+    
+    // Left rivets
+    pushGeo(metalGeos, rivet, new THREE.Matrix4().makeTranslation(-0.25, 0.04, 0.003));
+    pushGeo(metalGeos, rivet.clone(), new THREE.Matrix4().makeTranslation(-0.24, 0.04, 0.003));
+    
+    // Right rivets
+    pushGeo(metalGeos, rivet.clone(), new THREE.Matrix4().makeTranslation(0.25, 0.04, 0.003));
+    pushGeo(metalGeos, rivet.clone(), new THREE.Matrix4().makeTranslation(0.24, 0.04, 0.003));
   }
 
   const lFill = new THREE.Mesh(fillGeo, lensMat);
   const rFill = new THREE.Mesh(fillGeo.clone(), lensMat);
-  lFill.position.set(-0.175, 0, -0.001);
-  rFill.position.set( 0.175, 0, -0.001);
+  lFill.position.set(-0.175, 0, 0);
+  rFill.position.set( 0.175, 0, 0);
   group.add(lFill, rFill);
 
   return group;
