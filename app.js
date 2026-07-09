@@ -272,11 +272,12 @@ function landmarkToWorld(lm) {
 function extractRotationFromMatrix(matrixArray) {
   const mat = new THREE.Matrix4().fromArray(matrixArray);
   
-  // MediaPipe is OpenCV (Y-down, Z-forward).
-  // ThreeJS is WebGL (Y-up, Z-backward).
-  // We apply a 180-degree rotation around X to align the coordinate systems.
-  const fixMat = new THREE.Matrix4().makeRotationX(Math.PI);
-  mat.multiply(fixMat);
+  // By physically mirroring the 3D geometry (scale.x = -1), our WebGL object
+  // becomes left-handed (X-left, Y-up, Z-back).
+  // The MediaPipe matrix is OpenCV (X-right, Y-down, Z-forward).
+  // Because ALL THREE AXES are perfectly inverted between the two, they 
+  // mathematically cancel out (-1 * -1 = +1). 
+  // We can apply the raw MediaPipe matrix directly without any axis flipping!
   
   const position = new THREE.Vector3();
   const quat = new THREE.Quaternion();
@@ -302,8 +303,8 @@ function onFaceResults(lmArray, transformMatrix) {
 
   target.position.copy(center);
 
-  // Scale: inter-eye distance × constant
-  const eyeDist  = Math.abs(lmArray[LM.L_EYE_OUTER].x - lmArray[LM.R_EYE_OUTER].x);
+  // Scale: inter-eye distance (in World Coordinates) × constant
+  const eyeDist  = le.distanceTo(re);
   const sf       = Math.max(eyeDist * 2.1, 0.01);
   
   // Mirror the glasses horizontally (-sf on X) to perfectly match the mirrored video feed!
