@@ -482,6 +482,7 @@ async function startCamera() {
         facingMode: 'user',
         width:      { ideal: isMobile ? 720  : 1280 },
         height:     { ideal: isMobile ? 1280 : 720  },
+        aspectRatio: { ideal: window.innerWidth / window.innerHeight },
       },
       audio: false,
     });
