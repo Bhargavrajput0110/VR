@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 6;     // bump to invalidate old cache
+const IDB_VERSION      = 7;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -317,17 +317,21 @@ function onFaceResults(lmArray, transformMatrix) {
   const re = landmarkToWorld(lmArray[LM.R_EYE_OUTER]);
   const nb = landmarkToWorld(lmArray[LM.NOSE_BRIDGE]);
 
-  // Center between eyes, pushed slightly toward nose bridge
+  // Center between eyes
   const center = new THREE.Vector3()
     .addVectors(le, re)
     .multiplyScalar(0.5);
-  center.y += (nb.y - center.y) * 0.35;
+    
+  const eyeDist  = le.distanceTo(re);
+
+  // Geometric centers of 3D glasses often sit too high because the arms dip down behind the ears.
+  // We apply a downward physical offset to snap them from the forehead down to the eyes.
+  center.y -= eyeDist * 0.25;
 
   target.position.copy(center);
 
   // Scale: inter-eye distance (in World Coordinates) × constant
-  const eyeDist  = le.distanceTo(re);
-  const sf       = Math.max(eyeDist * 2.1, 0.01);
+  const sf = Math.max(eyeDist * 2.1, 0.01);
   
   // Mirror the glasses geometry horizontally (-sf on X) to map it perfectly 
   // into the Left-Handed space of the mirrored video feed.
@@ -610,6 +614,10 @@ async function loadGlassesModel(entry) {
     // Create a wrapper to scale the model width to exactly 1.0 unit
     const wrapper = new THREE.Group();
     const uniformScale = 1.0 / Math.max(size.x, 0.001);
+    
+    // External models usually face +Y natively, which becomes +Z after loaders. 
+    // We apply a 180 rotation so the arms face the face, not the camera.
+    model.rotation.y = Math.PI;
     
     wrapper.scale.setScalar(uniformScale);
     wrapper.add(model);
