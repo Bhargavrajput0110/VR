@@ -272,19 +272,23 @@ function landmarkToWorld(lm) {
 function extractRotationFromMatrix(matrixArray) {
   const mat = new THREE.Matrix4().fromArray(matrixArray);
   
-  // By physically mirroring the 3D geometry (scale.x = -1), our WebGL object
-  // becomes left-handed (X-left, Y-up, Z-back).
-  // The MediaPipe matrix is OpenCV (X-right, Y-down, Z-forward).
-  // Because ALL THREE AXES are perfectly inverted between the two, they 
-  // mathematically cancel out (-1 * -1 = +1). 
-  // We can apply the raw MediaPipe matrix directly without any axis flipping!
+  // 1. MediaPipe resting face is rotated 180 degrees around Y relative to the camera.
+  // We must apply a 180-degree rotation around Y to normalize the coordinate space.
+  const fixMat = new THREE.Matrix4().makeRotationY(Math.PI);
+  mat.multiply(fixMat);
   
+  // 2. Decompose into raw quaternion
   const position = new THREE.Vector3();
   const quat = new THREE.Quaternion();
   const scale = new THREE.Vector3();
   mat.decompose(position, quat, scale);
   
-  return quat;
+  // 3. Due to Left-Handed space mapping (-sf on X scale), Pitch mathematically inverts.
+  // We extract Euler angles and negate Pitch (-euler.x) to fix looking up/down.
+  const euler = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
+  const corrected = new THREE.Euler(-euler.x, euler.y, euler.z, 'YXZ');
+  
+  return new THREE.Quaternion().setFromEuler(corrected);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
