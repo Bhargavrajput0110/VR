@@ -267,28 +267,46 @@ function landmarkToWorld(lm) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD POSE — Extracted from Google's optimized facial transform matrix
+// HEAD POSE — Bulletproof Vector Basis Solver (Screen-Space mapped)
 // ─────────────────────────────────────────────────────────────────────────────
-function extractRotationFromMatrix(matrixArray) {
-  const mat = new THREE.Matrix4().fromArray(matrixArray);
+function solvePoseFromLandmarks(lmArray) {
+  // Convert MediaPipe coords to pseudo-WebGL space for accurate rotation basis
+  function toVec(lm) {
+    // Mirrored X: 1 - 2*x. Screen Y: 1 - 2*y. 
+    // Z: MediaPipe smaller is closer -> WebGL +Z is closer.
+    // Z is scaled to approximate aspect ratio depth.
+    return new THREE.Vector3(
+      1.0 - 2.0 * lm.x, 
+      1.0 - 2.0 * lm.y, 
+      -lm.z * 3.0 
+    );
+  }
+
+  const le = toVec(lmArray[LM.L_EYE_OUTER]);
+  const re = toVec(lmArray[LM.R_EYE_OUTER]);
+  const nose = toVec(lmArray[LM.NOSE_TIP]);
+
+  // X-axis: Points from physical right eye (left side of screen) to physical left eye (right side).
+  const xAxis = new THREE.Vector3().subVectors(le, re).normalize();
+
+  // Y-axis: Points from Nose up to the center of the eyes.
+  const eyeCenter = new THREE.Vector3().addVectors(le, re).multiplyScalar(0.5);
+  const yAxis = new THREE.Vector3().subVectors(eyeCenter, nose).normalize();
+
+  // Z-axis: Orthogonal to face plane (pointing out of screen).
+  const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+
+  // Gram-Schmidt orthogonalization to ensure perfectly rigid 90-degree axes
+  yAxis.crossVectors(zAxis, xAxis).normalize();
+
+  const mat = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
   
-  // 1. MediaPipe resting face is rotated 180 degrees around Y relative to the camera.
-  // We must apply a 180-degree rotation around Y to normalize the coordinate space.
-  const fixMat = new THREE.Matrix4().makeRotationY(Math.PI);
-  mat.multiply(fixMat);
-  
-  // 2. Decompose into raw quaternion
-  const position = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const scale = new THREE.Vector3();
-  mat.decompose(position, quat, scale);
-  
-  // 3. Due to Left-Handed space mapping (-sf on X scale), Pitch mathematically inverts.
-  // We extract Euler angles and negate Pitch (-euler.x) to fix looking up/down.
-  const euler = new THREE.Euler().setFromQuaternion(quat, 'YXZ');
-  const corrected = new THREE.Euler(-euler.x, euler.y, euler.z, 'YXZ');
-  
-  return new THREE.Quaternion().setFromEuler(corrected);
+  // The glasses geometry might have a slight natural downward tilt based on bridge model.
+  // We apply a slight pitch correction to keep them parallel to the eyes.
+  const tiltFix = new THREE.Matrix4().makeRotationX(-0.15);
+  mat.multiply(tiltFix);
+
+  return new THREE.Quaternion().setFromRotationMatrix(mat);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,13 +329,11 @@ function onFaceResults(lmArray, transformMatrix) {
   const eyeDist  = le.distanceTo(re);
   const sf       = Math.max(eyeDist * 2.1, 0.01);
   
-  // Mirror the glasses horizontally (-sf on X) to perfectly match the mirrored video feed!
-  target.scale.set(-sf, sf, sf);
+  // Standard uniform scale (Right-Handed)
+  target.scale.setScalar(sf);
 
-  if (transformMatrix) {
-    // Apply highly-stable rotation using heavily smoothed slerp (eliminates jitter)
-    target.quat.slerp(extractRotationFromMatrix(transformMatrix), 0.5);
-  }
+  // Apply highly-stable rotation derived directly from exact screen landmarks
+  target.quat.slerp(solvePoseFromLandmarks(lmArray), 0.5);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
