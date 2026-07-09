@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 4;     // bump to invalidate old cache
+const IDB_VERSION      = 5;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -329,8 +329,9 @@ function onFaceResults(lmArray, transformMatrix) {
   const eyeDist  = le.distanceTo(re);
   const sf       = Math.max(eyeDist * 2.1, 0.01);
   
-  // Standard uniform scale (Right-Handed)
-  target.scale.setScalar(sf);
+  // Mirror the glasses geometry horizontally (-sf on X) to map it perfectly 
+  // into the Left-Handed space of the mirrored video feed.
+  target.scale.set(-sf, sf, sf);
 
   // Apply highly-stable rotation derived directly from exact screen landmarks
   target.quat.slerp(solvePoseFromLandmarks(lmArray), 0.5);
@@ -600,9 +601,6 @@ async function loadGlassesModel(entry) {
     // Create a wrapper to scale the model width to exactly 1.0 unit
     const wrapper = new THREE.Group();
     const uniformScale = 1.0 / Math.max(size.x, 0.001);
-    
-    // Most sketchfab models face the wrong way, we apply a 180 rotation to face the camera
-    model.rotation.y = Math.PI; 
     
     wrapper.scale.setScalar(uniformScale);
     wrapper.add(model);
