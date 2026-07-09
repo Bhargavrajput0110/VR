@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 3;     // bump to invalidate old cache
+const IDB_VERSION      = 4;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -837,6 +837,12 @@ function buildProceduralFrame(entry) {
   lFill.position.set(-0.175, 0, -0.001);
   rFill.position.set( 0.175, 0, -0.001);
   group.add(lFill, rFill);
+
+  // Normalize procedural glasses width to exactly 1.0 so `sf` scaling works perfectly
+  const box = new THREE.Box3().setFromObject(group);
+  const size = box.getSize(new THREE.Vector3());
+  const uniformScale = 1.0 / Math.max(size.x, 0.001);
+  group.scale.setScalar(uniformScale);
 
   return group;
 }
