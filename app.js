@@ -267,26 +267,23 @@ function landmarkToWorld(lm) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD POSE SOLVER (6-Point Math with Mirror Fix)
+// HEAD POSE — Extracted from Google's optimized facial transform matrix
 // ─────────────────────────────────────────────────────────────────────────────
-function solvePose(lmArray) {
-  // 1. Roll: Angle of the eyes
-  const le = lmArray[LM.L_EYE_OUTER];
-  const re = lmArray[LM.R_EYE_OUTER];
-  const roll = Math.atan2((1 - re.y) - (1 - le.y), (1 - re.x) - (1 - le.x));
-
-  // 2. Yaw: Z-depth difference between eyes
-  const zDiff = (lmArray[LM.L_EYE_OUTER].z - lmArray[LM.R_EYE_OUTER].z);
-  const yaw = Math.atan2(zDiff, 0.15) * 0.7;
-
-  // 3. Pitch: Nose vs Eyes
-  const eyeCenterY = (le.y + re.y) * 0.5;
-  const noseTipY = lmArray[LM.NOSE_TIP].y;
-  const pitch = Math.atan2(noseTipY - eyeCenterY, 0.3) * 0.5;
-
-  // Apply mirroring corrections
-  const euler = new THREE.Euler(pitch, -yaw, roll, 'YXZ');
-  return new THREE.Quaternion().setFromEuler(euler);
+function extractRotationFromMatrix(matrixArray) {
+  const mat = new THREE.Matrix4().fromArray(matrixArray);
+  
+  // MediaPipe is OpenCV (Y-down, Z-forward).
+  // ThreeJS is WebGL (Y-up, Z-backward).
+  // We apply a 180-degree rotation around X to align the coordinate systems.
+  const fixMat = new THREE.Matrix4().makeRotationX(Math.PI);
+  mat.multiply(fixMat);
+  
+  const position = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  mat.decompose(position, quat, scale);
+  
+  return quat;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -306,14 +303,16 @@ function onFaceResults(lmArray, transformMatrix) {
   target.position.copy(center);
 
   // Scale: inter-eye distance × constant
-  const eyeDist  = le.distanceTo(re);
+  const eyeDist  = Math.abs(lmArray[LM.L_EYE_OUTER].x - lmArray[LM.R_EYE_OUTER].x);
   const sf       = Math.max(eyeDist * 2.1, 0.01);
-  target.scale.setScalar(sf);
+  
+  // Mirror the glasses horizontally (-sf on X) to perfectly match the mirrored video feed!
+  target.scale.set(-sf, sf, sf);
 
-  const targetQuat = solvePose(lmArray);
-
-  // Apply highly-stable rotation using heavily smoothed slerp (eliminates jitter)
-  target.quat.slerp(targetQuat, 0.15);
+  if (transformMatrix) {
+    // Apply highly-stable rotation using heavily smoothed slerp (eliminates jitter)
+    target.quat.slerp(extractRotationFromMatrix(transformMatrix), 0.5);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
