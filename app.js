@@ -287,9 +287,9 @@ function extractRotationFromMatrix(matrixArray) {
   // we must invert Yaw (Y axis) and Roll (Z axis).
   // Pitch (X axis) remains correct because looking up/down is unaffected by horizontal mirroring.
   const mirroredEuler = new THREE.Euler(
-    euler.x,     // Pitch (keep)
-    -euler.y,    // Yaw (invert)
-    -euler.z,    // Roll (invert)
+    euler.x,             // Pitch (keep)
+    -euler.y,            // Yaw (invert for horizontal mirror)
+    -euler.z + Math.PI,  // Roll (invert for mirror, flip 180 to fix upside-down OpenCV coords)
     'XYZ'
   );
   
