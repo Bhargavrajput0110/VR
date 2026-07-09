@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 7;     // bump to invalidate old cache
+const IDB_VERSION      = 8;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -254,8 +254,8 @@ function landmarkToWorld(lm) {
   const offX = (w - rvw) / 2;
   const offY = (h - rvh) / 2;
 
-  // Mirror X (front camera is mirrored in CSS with scaleX(-1))
-  const px = offX + (1.0 - lm.x) * rvw;
+  // Pure unmirrored mapping (CSS handles the final visual mirroring)
+  const px = offX + lm.x * rvw;
   const py = offY + lm.y * rvh;
 
   const halfH  = 1.0;
@@ -267,16 +267,14 @@ function landmarkToWorld(lm) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD POSE — Bulletproof Vector Basis Solver (Screen-Space mapped)
+// HEAD POSE — Bulletproof Vector Basis Solver (Pure Unmirrored Space)
 // ─────────────────────────────────────────────────────────────────────────────
 function solvePoseFromLandmarks(lmArray) {
-  // Convert MediaPipe coords to pseudo-WebGL space for accurate rotation basis
+  // Convert MediaPipe coords to pure WebGL space
   function toVec(lm) {
-    // Mirrored X: 1 - 2*x. Screen Y: 1 - 2*y. 
-    // Z: MediaPipe smaller is closer -> WebGL +Z is closer.
-    // Z is scaled to approximate aspect ratio depth.
+    // Unmirrored X: 2*x - 1. Screen Y: 1 - 2*y. 
     return new THREE.Vector3(
-      1.0 - 2.0 * lm.x, 
+      2.0 * lm.x - 1.0, 
       1.0 - 2.0 * lm.y, 
       -lm.z * 3.0 
     );
@@ -286,8 +284,8 @@ function solvePoseFromLandmarks(lmArray) {
   const re = toVec(lmArray[LM.R_EYE_OUTER]);
   const nose = toVec(lmArray[LM.NOSE_TIP]);
 
-  // X-axis: Points from physical right eye (left side of screen) to physical left eye (right side).
-  const xAxis = new THREE.Vector3().subVectors(le, re).normalize();
+  // X-axis: Points from Left Eye (smaller X) to Right Eye (larger X) in unmirrored space.
+  const xAxis = new THREE.Vector3().subVectors(re, le).normalize();
 
   // Y-axis: Points from Nose up to the center of the eyes.
   const eyeCenter = new THREE.Vector3().addVectors(le, re).multiplyScalar(0.5);
@@ -333,9 +331,8 @@ function onFaceResults(lmArray, transformMatrix) {
   // Scale: inter-eye distance (in World Coordinates) × constant
   const sf = Math.max(eyeDist * 2.1, 0.01);
   
-  // Mirror the glasses geometry horizontally (-sf on X) to map it perfectly 
-  // into the Left-Handed space of the mirrored video feed.
-  target.scale.set(-sf, sf, sf);
+  // Standard uniform scale (Right-Handed) — CSS scaleX(-1) handles mirroring for us!
+  target.scale.setScalar(sf);
 
   // Apply highly-stable rotation derived directly from exact screen landmarks
   target.quat.slerp(solvePoseFromLandmarks(lmArray), 0.5);

@@ -67,8 +67,8 @@ body { font-family: var(--sans); color: var(--text-primary); -webkit-font-smooth
 }
 
 #webcam         { z-index: 1; transform: scaleX(-1); }
-#debugCanvas    { z-index: 2; pointer-events: none; }
-#threeCanvas    { z-index: 3; pointer-events: none; }
+#debugCanvas    { z-index: 2; pointer-events: none; transform: scaleX(-1); }
+#threeCanvas    { z-index: 3; pointer-events: none; transform: scaleX(-1); }
 
 /* No-face pulsing border */
 .no-face-border {
