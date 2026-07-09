@@ -565,41 +565,19 @@ async function getIDB() {
   return idb;
 }
 
-// Automatically centers and normalizes scale of external models (e.g. from Sketchfab/Spline)
-function normalizeModel(scene) {
-  const box = new THREE.Box3().setFromObject(scene);
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-
-  // Center the geometry
-  const wrapper = new THREE.Group();
-  scene.position.x = -center.x;
-  scene.position.y = -center.y;
-  scene.position.z = -center.z;
-  
-  // Scale the scene so its total width matches our procedural glasses (~0.53 units)
-  const targetWidth = 0.53;
-  const scale = targetWidth / size.x;
-  scene.scale.setScalar(scale);
-
-  wrapper.add(scene);
-  return wrapper;
-}
-
 async function loadGlassesModel(entry) {
   const cacheKey = `glb_v${IDB_VERSION}_${entry.id}`;
 
   // 1. In-memory cache (fastest)
   if (modelCache.has(entry.id)) return modelCache.get(entry.id).clone(true);
 
-  // 2. Try loading a real external GLB/GLTF file first (if client provided one)
+  // 2. Try loading a real external GLB file first (if client provided one)
   try {
-    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`).catch(() => gltfLoader.loadAsync(`${entry.id}.gltf`));
-    const normalized = normalizeModel(gltf.scene);
-    modelCache.set(entry.id, normalized);
-    return normalized.clone(true);
+    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`);
+    modelCache.set(entry.id, gltf.scene);
+    return gltf.scene.clone(true);
   } catch (err) {
-    console.warn(`[VISAGE] No external ${entry.id}.glb or .gltf found, falling back to procedural cache.`);
+    console.warn(`[VISAGE] No external ${entry.id}.glb found, falling back to procedural cache.`);
   }
 
   // 3. IndexedDB GLB cache (fast — avoids re-building geometry)
