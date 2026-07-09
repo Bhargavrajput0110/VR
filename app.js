@@ -29,7 +29,7 @@ const FACE_LOST_MS     = 2000;  // ms before hiding glasses after face lost
 const DEBUG_KEY        = 'd';
 const IDB_DB_NAME      = 'visage_glb_cache';
 const IDB_STORE_NAME   = 'glbs';
-const IDB_VERSION      = 5;     // bump to invalidate old cache
+const IDB_VERSION      = 6;     // bump to invalidate old cache
 
 // Landmark indices (MediaPipe 468-point canonical face mesh)
 const LM = {
@@ -591,7 +591,16 @@ async function loadGlassesModel(entry) {
     const model = gltf.scene;
 
     // Normalize external models: they often have random sizes/origins
-    const box = new THREE.Box3().setFromObject(model);
+    // IMPORTANT: We MUST only measure Meshes. Sketchfab models often include
+    // distant cameras or lights that completely destroy the bounding box.
+    const box = new THREE.Box3();
+    model.updateMatrixWorld(true);
+    model.traverse((child) => {
+      if (child.isMesh) {
+        box.expandByObject(child);
+      }
+    });
+    
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
 
