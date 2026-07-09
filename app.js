@@ -267,33 +267,26 @@ function landmarkToWorld(lm) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD POSE — Extracted directly from Google's optimized facial transform matrix
+// HEAD POSE SOLVER (6-Point Math with Mirror Fix)
 // ─────────────────────────────────────────────────────────────────────────────
-function extractRotationFromMatrix(matrixArray) {
-  // MediaPipe provides a 4x4 column-major matrix
-  const mat = new THREE.Matrix4().fromArray(matrixArray);
-  
-  // Extract the raw rotation (which assumes an unmirrored camera)
-  // We must decompose the matrix because MediaPipe includes scaling and translation in it
-  const position = new THREE.Vector3();
-  const rawQuat = new THREE.Quaternion();
-  const scale = new THREE.Vector3();
-  mat.decompose(position, rawQuat, scale);
-  
-  // Convert to Euler angles to fix the mirroring
-  const euler = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
-  
-  // Because our webcam video is mirrored horizontally via CSS/coords,
-  // we must invert Yaw (Y axis) and Roll (Z axis).
-  // Pitch (X axis) remains correct because looking up/down is unaffected by horizontal mirroring.
-  const mirroredEuler = new THREE.Euler(
-    euler.x,             // Pitch (keep)
-    -euler.y,            // Yaw (invert for horizontal mirror)
-    -euler.z + Math.PI,  // Roll (invert for mirror, flip 180 to fix upside-down OpenCV coords)
-    'XYZ'
-  );
-  
-  return new THREE.Quaternion().setFromEuler(mirroredEuler);
+function solvePose(lmArray) {
+  // 1. Roll: Angle of the eyes
+  const le = lmArray[LM.L_EYE_OUTER];
+  const re = lmArray[LM.R_EYE_OUTER];
+  const roll = Math.atan2((1 - re.y) - (1 - le.y), (1 - re.x) - (1 - le.x));
+
+  // 2. Yaw: Z-depth difference between eyes
+  const zDiff = (lmArray[LM.L_EYE_OUTER].z - lmArray[LM.R_EYE_OUTER].z);
+  const yaw = Math.atan2(zDiff, 0.15) * 0.7;
+
+  // 3. Pitch: Nose vs Eyes
+  const eyeCenterY = (le.y + re.y) * 0.5;
+  const noseTipY = lmArray[LM.NOSE_TIP].y;
+  const pitch = Math.atan2(noseTipY - eyeCenterY, 0.3) * 0.5;
+
+  // Apply mirroring corrections
+  const euler = new THREE.Euler(pitch, -yaw, roll, 'YXZ');
+  return new THREE.Quaternion().setFromEuler(euler);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,10 +310,10 @@ function onFaceResults(lmArray, transformMatrix) {
   const sf       = Math.max(eyeDist * 2.1, 0.01);
   target.scale.setScalar(sf);
 
-  // Apply highly-stable rotation from Google's internal solver
-  if (transformMatrix) {
-    target.quat.copy(extractRotationFromMatrix(transformMatrix));
-  }
+  const targetQuat = solvePose(lmArray);
+
+  // Apply highly-stable rotation using heavily smoothed slerp (eliminates jitter)
+  target.quat.slerp(targetQuat, 0.15);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
