@@ -571,13 +571,21 @@ async function loadGlassesModel(entry) {
   // 1. In-memory cache (fastest)
   if (modelCache.has(entry.id)) return modelCache.get(entry.id).clone(true);
 
-  // 2. Try loading a real external GLB file first (if client provided one)
+  // 2. Try loading a real external GLTF/GLB file first (if client provided one)
   try {
-    const gltf = await gltfLoader.loadAsync(`${entry.id}.glb`);
-    modelCache.set(entry.id, gltf.scene);
-    return gltf.scene.clone(true);
+    const gltf = await gltfLoader.loadAsync(`${entry.id}.gltf`);
+    const normalized = normalizeLoadedModel(gltf.scene);
+    modelCache.set(entry.id, normalized);
+    return normalized.clone(true);
   } catch (err) {
-    console.warn(`[VISAGE] No external ${entry.id}.glb found, falling back to procedural cache.`);
+    try {
+      const gltf2 = await gltfLoader.loadAsync(`${entry.id}.glb`);
+      const normalized = normalizeLoadedModel(gltf2.scene);
+      modelCache.set(entry.id, normalized);
+      return normalized.clone(true);
+    } catch (err2) {
+      console.warn(`[VISAGE] No external ${entry.id}.gltf/.glb found, falling back to procedural cache.`);
+    }
   }
 
   // 3. IndexedDB GLB cache (fast — avoids re-building geometry)
@@ -610,6 +618,29 @@ function parseGLB(arrayBuffer) {
   return new Promise((res, rej) => {
     gltfLoader.parse(arrayBuffer, '', gltf => res(gltf.scene), rej);
   });
+}
+
+function normalizeLoadedModel(scene) {
+  // Compute bounding box
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  
+  // Center the model around the origin (0,0,0)
+  scene.position.sub(center);
+  
+  // Our procedural models are exactly 0.35 units wide (0.175 * 2)
+  // Scale the imported model to match this exact width
+  const targetWidth = 0.35; 
+  if (size.x > 0) {
+    const scale = targetWidth / size.x;
+    scene.scale.setScalar(scale);
+  }
+
+  // Create a wrapper group so we can return an object centered at 0,0,0
+  const wrapper = new THREE.Group();
+  wrapper.add(scene);
+  return wrapper;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
