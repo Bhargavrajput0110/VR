@@ -300,19 +300,7 @@ function extractRotationFromMatrix(matrixArray) {
 // FACE RESULT HANDLER
 // ─────────────────────────────────────────────────────────────────────────────
 function onFaceResults(lmArray, transformMatrix) {
-  const le = landmarkToWorld(lmArray[LM.L_EYE_OUTER]);
-  const re = landmarkToWorld(lmArray[LM.R_EYE_OUTER]);
-  const nb = landmarkToWorld(lmArray[LM.NOSE_BRIDGE]);
-
-  // Center between eyes, pushed slightly toward nose bridge
-  const center = new THREE.Vector3()
-    .addVectors(le, re)
-    .multiplyScalar(0.5);
-  center.y += (nb.y - center.y) * 0.35;
-
-  target.position.copy(center);
-
-  // Dynamic Scale: Calculate true face width using the temples
+  // 1. Dynamic Scale: Calculate true face width using the temples
   const lt = landmarkToWorld(lmArray[LM.L_TEMPLE]);
   const rt = landmarkToWorld(lmArray[LM.R_TEMPLE]);
   const faceWidth = lt.distanceTo(rt);
@@ -322,10 +310,34 @@ function onFaceResults(lmArray, transformMatrix) {
   const sf = Math.max(faceWidth * 1.05, 0.01);
   target.scale.setScalar(sf);
 
-  // Apply highly-stable rotation from Google's internal solver
+  // 2. Precise Positioning using Local Coordinate Offsets
+  // Glasses rest primarily on the bridge of the nose.
+  const nb = landmarkToWorld(lmArray[LM.NOSE_BRIDGE]);
+  
+  // We extract the head's rotation so we can apply offsets in "Head Space" 
+  // (e.g. pushing the glasses "back" into the head regardless of how the head is turned).
   if (transformMatrix) {
     target.quat.copy(extractRotationFromMatrix(transformMatrix));
   }
+
+  // Z-offset: Bounding box center of 3D glasses is often halfway between the front lenses 
+  // and the back ear-tips. We push it back by ~35% of the face width so the lenses rest on the nose.
+  const zOffset = faceWidth * 0.35; 
+  
+  // Y-offset: Glasses usually rest slightly lower than the absolute bridge landmark.
+  const yOffset = faceWidth * 0.08; 
+  
+  const anchor = nb.clone();
+  
+  // Create a local offset vector (0, down, back)
+  const localOffset = new THREE.Vector3(0, -yOffset, -zOffset);
+  // Rotate the offset so it points correctly relative to the user's tilted head
+  localOffset.applyQuaternion(target.quat);
+  
+  // Add the rotated offset to the nose bridge position
+  anchor.add(localOffset);
+  
+  target.position.copy(anchor);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
