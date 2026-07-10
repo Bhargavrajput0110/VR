@@ -321,11 +321,11 @@ function onFaceResults(lmArray, transformMatrix) {
   }
 
   // Z-offset: Bounding box center of 3D glasses is often halfway between the front lenses 
-  // and the back ear-tips. We push it back by ~35% of the face width so the lenses rest on the nose.
-  const zOffset = faceWidth * 0.35; 
+  // and the back ear-tips. We push it back by ~28% of the face width so the lenses rest on the nose.
+  const zOffset = faceWidth * 0.28; 
   
   // Y-offset: Glasses usually rest slightly lower than the absolute bridge landmark.
-  const yOffset = faceWidth * 0.08; 
+  const yOffset = faceWidth * 0.05; 
   
   const anchor = nb.clone();
   
