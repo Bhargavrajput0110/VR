@@ -638,7 +638,7 @@ function normalizeLoadedModel(scene) {
   wrapper.add(scene);
   
   // Scale the entire wrapper to match our procedural frames width
-  const targetWidth = 0.45; // Increased size to make the glasses fit better
+  const targetWidth = 0.60; // Increased size to make the glasses fit better
   if (size.x > 0) {
     const scale = targetWidth / size.x;
     wrapper.scale.setScalar(scale);
