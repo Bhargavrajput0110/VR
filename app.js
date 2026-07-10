@@ -626,20 +626,24 @@ function normalizeLoadedModel(scene) {
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   
-  // Center the model around the origin (0,0,0)
-  scene.position.sub(center);
+  // Create a wrapper group
+  const wrapper = new THREE.Group();
   
-  // Our procedural models are exactly 0.35 units wide (0.175 * 2)
-  // Scale the imported model to match this exact width
+  // Center the model around the origin BEFORE scaling
+  // By placing it in a wrapper, the translation will also be scaled down properly.
+  scene.position.x = -center.x;
+  scene.position.y = -center.y;
+  scene.position.z = -center.z;
+  
+  wrapper.add(scene);
+  
+  // Scale the entire wrapper to match our procedural frames width
   const targetWidth = 0.35; 
   if (size.x > 0) {
     const scale = targetWidth / size.x;
-    scene.scale.setScalar(scale);
+    wrapper.scale.setScalar(scale);
   }
 
-  // Create a wrapper group so we can return an object centered at 0,0,0
-  const wrapper = new THREE.Group();
-  wrapper.add(scene);
   return wrapper;
 }
 
