@@ -312,9 +312,14 @@ function onFaceResults(lmArray, transformMatrix) {
 
   target.position.copy(center);
 
-  // Scale: inter-eye distance × constant
-  const eyeDist  = le.distanceTo(re);
-  const sf       = Math.max(eyeDist * 2.1, 0.01);
+  // Dynamic Scale: Calculate true face width using the temples
+  const lt = landmarkToWorld(lmArray[LM.L_TEMPLE]);
+  const rt = landmarkToWorld(lmArray[LM.R_TEMPLE]);
+  const faceWidth = lt.distanceTo(rt);
+  
+  // Since all 3D models are normalized to exactly 1.0 width, 
+  // setting scale to (faceWidth * 1.05) makes the glasses perfectly wrap the face.
+  const sf = Math.max(faceWidth * 1.05, 0.01);
   target.scale.setScalar(sf);
 
   // Apply highly-stable rotation from Google's internal solver
@@ -602,16 +607,19 @@ async function loadGlassesModel(entry) {
   // 3. Build procedural geometry, bake to GLB, store in IDB
   setLoadingText(`Building ${entry.name} frame…`);
   const group = buildProceduralFrame(entry);
+  
+  // Normalize the procedural model to exactly 1.0 width as well!
+  const normalizedGroup = normalizeLoadedModel(group);
 
   // Bake & cache async (don't block render)
   if (db) {
-    exportToGLB(group).then(glb => {
+    exportToGLB(normalizedGroup).then(glb => {
       writeToIDB(db, cacheKey, glb).catch(() => {});
     }).catch(() => {});
   }
 
-  modelCache.set(entry.id, group);
-  return group.clone(true);
+  modelCache.set(entry.id, normalizedGroup);
+  return normalizedGroup.clone(true);
 }
 
 function parseGLB(arrayBuffer) {
@@ -637,8 +645,8 @@ function normalizeLoadedModel(scene) {
   
   wrapper.add(scene);
   
-  // Scale the entire wrapper to match our procedural frames width
-  const targetWidth = 0.60; // Increased size to make the glasses fit better
+  // Scale the entire wrapper to exactly 1.0 width
+  const targetWidth = 1.0; 
   if (size.x > 0) {
     const scale = targetWidth / size.x;
     wrapper.scale.setScalar(scale);
