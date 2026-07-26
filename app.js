@@ -451,14 +451,17 @@ function landmarkToWorld(lm, zOverride) {
 function extractRotation(matrixArray) {
   const mat = new THREE.Matrix4().fromArray(matrixArray);
   const pos = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
+  const rawQuat = new THREE.Quaternion();
   const sc   = new THREE.Vector3();
-  mat.decompose(pos, quat, sc);
-  const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
-  // Tilt glasses up slightly (subtract ~0.15 rads from pitch) to prevent them looking down
-  const tiltX = euler.x - 0.15;
-  const mirrored = new THREE.Euler(tiltX, -euler.y, -euler.z, 'XYZ');
-  return new THREE.Quaternion().setFromEuler(mirrored);
+  mat.decompose(pos, rawQuat, sc);
+
+  // Single deterministic correction for the mirrored selfie camera —
+  // do NOT negate individual Euler components, it breaks under combined
+  // pitch+yaw+roll. Compose in quaternion space instead.
+  const mirrorFix = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0), Math.PI
+  );
+  return mirrorFix.multiply(rawQuat);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -620,16 +623,20 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
     const rawQuat = extractRotation(transformMatrix);
     const euler   = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
 
-    // Filter each Euler angle independently
+    // Filter each Euler angle independently (this is safe now that the quaternion is correctly mirrored)
     fx = OEF.rx.filter(euler.x, timestamp);
     fy = OEF.ry.filter(euler.y, timestamp);
     fz = OEF.rz.filter(euler.z, timestamp);
 
-    // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
-    // 8 degrees = ~0.14 radians
-    const pantoscopicTilt = 0.14;
+    const filteredQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(fx, fy, fz, 'XYZ'));
 
-    target.quat.setFromEuler(new THREE.Euler(fx + pantoscopicTilt, fy, fz, 'XYZ'));
+    // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
+    // Apply as a separate small quaternion multiplied on top, not baked into Euler
+    const pantoscopicTilt = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0), 0.14
+    );
+    
+    target.quat.copy(filteredQuat.multiply(pantoscopicTilt));
   } else {
     const e = new THREE.Euler().setFromQuaternion(target.quat, 'XYZ');
     fx = e.x; fy = e.y; fz = e.z;
