@@ -438,11 +438,11 @@ function initThree() {
   renderer = new THREE.WebGLRenderer({
     canvas:          el.threeCanvas,
     alpha:           true,
-    antialias:       true,
+    antialias:       !isMobile, // Disable on mobile to save GPU
     powerPreference: 'high-performance',
     preserveDrawingBuffer: true, // required for capture
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 2 : 2.5));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2.5));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, 0);
   renderer.toneMapping         = THREE.ACESFilmicToneMapping;
@@ -469,7 +469,9 @@ function initThree() {
   rimLight.position.set(0, -2, 4);
   const topLight  = new THREE.DirectionalLight(0xffffff, 0.4);
   topLight.position.set(0, 8, 2);
-  scene.add(ambient, keyLight, fillLight, rimLight, topLight);
+  
+  scene.add(ambient, keyLight, topLight);
+  if (!isMobile) scene.add(fillLight, rimLight); // Save fragment shader cost on mobile
 
   glassesGroup = new THREE.Group();
   glassesGroup.visible = false;
@@ -797,6 +799,7 @@ function drawDebugLandmarks(lmArray) {
 // ─────────────────────────────────────────────────────────────────────────────
 let _fpsTimer     = 0;
 let _frameCounter = 0;
+let _lastDetectTime = 0;
 
 function animate(nowMs) {
   state.rafHandle = requestAnimationFrame(animate);
@@ -813,10 +816,17 @@ function animate(nowMs) {
   }
 
   if (state.isRunning && state.faceLandmarker && el.webcam.readyState >= 2 && nowMs > 0) {
-    let results;
-    try {
-      results = state.faceLandmarker.detectForVideo(el.webcam, nowMs);
-    } catch (_) {}
+    const isMobile = window.innerWidth <= 768;
+    // Throttle MediaPipe to ~20fps on mobile to prevent CPU thermal throttling
+    const detectInterval = isMobile ? 50 : 16;
+    
+    if (nowMs - _lastDetectTime >= detectInterval) {
+      _lastDetectTime = nowMs;
+      
+      let results;
+      try {
+        results = state.faceLandmarker.detectForVideo(el.webcam, nowMs);
+      } catch (_) {}
 
     if (results?.faceLandmarks?.length > 0) {
       const lmArray = results.faceLandmarks[0];
@@ -853,6 +863,7 @@ function animate(nowMs) {
         el.debugCanvas.getContext('2d').clearRect(0, 0, el.debugCanvas.width, el.debugCanvas.height);
       }
     }
+    } // End of throttle block
   }
 
   // ── Apply adaptive LERP / instant snap to glasses group ──
@@ -903,10 +914,10 @@ async function initMediaPipe() {
     },
     runningMode:                        'VIDEO',
     numFaces:                           1,
-    // Higher thresholds = more confident detections, fewer false positives
-    minFaceDetectionConfidence:         0.70,  // was 0.50
-    minFacePresenceConfidence:          0.70,  // was 0.50
-    minTrackingConfidence:              0.65,  // was 0.50
+    // Balanced thresholds for mobile speed vs stability
+    minFaceDetectionConfidence:         0.60,
+    minFacePresenceConfidence:          0.60,
+    minTrackingConfidence:              0.55,
     outputFaceBlendshapes:              false,
     outputFacialTransformationMatrixes: true,
   });
@@ -931,8 +942,8 @@ async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: 'user',
-        width:  { ideal: isMobile ? 1280 : 1920 },
-        height: { ideal: isMobile ? 720  : 1080 },
+        width:  { ideal: isMobile ? 640 : 1920 }, // 640 is enough for MediaPipe
+        height: { ideal: isMobile ? 480 : 1080 },
         frameRate: { ideal: 30, min: 24 },
       },
       audio: false,
