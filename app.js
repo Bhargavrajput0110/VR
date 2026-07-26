@@ -712,7 +712,8 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const eyeW     = landmarkToWorld(lo || li).distanceTo(landmarkToWorld(ro || ri)); // eye span
 
   // Weighted average: temple width is most stable
-  const rawScale = (templeW * 0.60 + eyeW * 0.25 + ipdW * 0.15) * 1.05;
+  // Increased multiplier from 1.05 to 1.25 to match real-world physical frame width
+  const rawScale = (templeW * 0.60 + eyeW * 0.25 + ipdW * 0.15) * 1.25;
   const filteredScale = OEF.scale.filter(rawScale, timestamp);
   target.scale.setScalar(Math.max(filteredScale, 0.01));
 
@@ -739,17 +740,18 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const eyeMidZ = (li.z + ri.z) * 0.5;
   const eyeMid  = { x: eyeMidX, y: eyeMidY, z: eyeMidZ };
 
-  // Weighted blend of eye-midpoint and nose-bridge for anchor
-  const anchorX = eyeMid.x * 0.60 + nb.x * 0.40;
-  const anchorY = eyeMid.y * 0.60 + nb.y * 0.40;
-  const anchorZ = eyeMid.z * 0.60 + nb.z * 0.40;
+  // Weighted blend: rely more on nose bridge for height (Y) to prevent glasses from sitting too low
+  const anchorX = eyeMid.x * 0.50 + nb.x * 0.50;
+  const anchorY = eyeMid.y * 0.30 + nb.y * 0.70;
+  const anchorZ = eyeMid.z * 0.50 + nb.z * 0.50;
   const anchor  = { x: anchorX, y: anchorY, z: anchorZ };
 
   const anchorWorld = landmarkToWorld(anchor);
 
-  // Depth-aware Z offset: glasses closer for smaller faces (further away), further for larger
+  // Depth-aware Z offset: pull forward slightly (-0.08 instead of -0.22) so it doesn't sink into face
+  // Y offset: push slightly UP (+0.04) to match real nose bridge resting point
   const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
-  const localOffset = new THREE.Vector3(0, -filteredScale * 0.08, -filteredScale * 0.22 * depthFactor);
+  const localOffset = new THREE.Vector3(0, filteredScale * 0.04, -filteredScale * 0.08 * depthFactor);
   localOffset.applyQuaternion(target.quat);
 
   // Apply One Euro Filter to world position
