@@ -8,9 +8,9 @@
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
 | 1 | Exploration & Architecture Analysis | Inspect app.js, identify landmark math functions (Landmark 6, temple width scaling), evaluate testability | none | DONE |
-| 2 | Test Infrastructure & Math Module (R1) | Extract math module fittingMath.js, update app.js, add `npm test` script in package.json | M1 | IN_PROGRESS |
-| 3 | Accuracy Verification Tests (R2) | Implement unit/integration tests in tests/accuracy.test.js asserting Landmark 6 origin and 1.15 temple width scale | M2 | IN_PROGRESS |
-| 4 | E2E & Hardening Verification | Run complete test suite, verify test output, run challengers & forensic audit | M3 | PLANNED |
+| 2 | Test Infrastructure & Math Module (R1) | Extract math module fittingMath.js, update app.js, add `npm test` script in package.json | M1 | DONE |
+| 3 | Accuracy Verification Tests (R2) | Implement unit/integration tests in tests/accuracy.test.js asserting Landmark 6 origin and 1.15 temple width scale | M2 | DONE |
+| 4 | E2E & Hardening Verification | Run complete test suite, verify test output, run challengers & forensic audit | M3 | DONE |
 
 ## Interface Contracts
 ### Landmark Transformation Math

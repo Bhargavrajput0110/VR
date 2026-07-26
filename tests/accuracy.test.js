@@ -146,3 +146,52 @@ test('OneEuroFilter noise reduction & filter functionality', () => {
   filter.reset();
   assert.strictEqual(filter._x, null, 'Reset should clear internal state');
 });
+
+test('landmarkToWorld handles null viewportOptions gracefully', () => {
+  const lm = { x: 0.5, y: 0.5, z: 0.0 };
+  assert.doesNotThrow(() => {
+    const res = landmarkToWorld(lm, null);
+    assert.ok(res !== null && typeof res.x === 'number', 'landmarkToWorld(lm, null) should return valid world position object');
+  }, 'landmarkToWorld with null viewportOptions should not throw TypeError');
+
+  const lmArray = createMockFaceLandmarks();
+  assert.doesNotThrow(() => {
+    const res = calculateScaleAndPosition(lmArray, null);
+    assert.ok(res !== null, 'calculateScaleAndPosition with null viewportOptions should return valid result');
+  }, 'calculateScaleAndPosition with null viewportOptions should not throw TypeError');
+});
+
+test('calculateScaleAndPosition sanitizes non-finite filter callback outputs (NaN / Infinity)', () => {
+  const lmArray = createMockFaceLandmarks();
+  const baseResult = calculateScaleAndPosition(lmArray);
+
+  // Test scaleFilter returning NaN and Infinity
+  const nanScaleFilterState = {
+    scaleFilter: { filter: () => NaN },
+    posFilters: {}
+  };
+  const nanScaleResult = calculateScaleAndPosition(lmArray, {}, nanScaleFilterState);
+  assert.ok(Math.abs(nanScaleResult.scale - baseResult.scale) < 1e-6, 'Scale should fall back to rawScale when filter returns NaN');
+
+  const infScaleFilterState = {
+    scaleFilter: { filter: () => Infinity },
+    posFilters: {}
+  };
+  const infScaleResult = calculateScaleAndPosition(lmArray, {}, infScaleFilterState);
+  assert.ok(Math.abs(infScaleResult.scale - baseResult.scale) < 1e-6, 'Scale should fall back to rawScale when filter returns Infinity');
+
+  // Test posFilters returning NaN / Infinity / -Infinity
+  const nanPosFilterState = {
+    scaleFilter: null,
+    posFilters: {
+      x: { filter: () => NaN },
+      y: { filter: () => Infinity },
+      z: { filter: () => -Infinity }
+    }
+  };
+  const nanPosResult = calculateScaleAndPosition(lmArray, {}, nanPosFilterState);
+  assert.strictEqual(nanPosResult.position.x, baseResult.position.x, 'Position X should fall back to rawX when filter returns NaN');
+  assert.strictEqual(nanPosResult.position.y, baseResult.position.y, 'Position Y should fall back to rawY when filter returns Infinity');
+  assert.strictEqual(nanPosResult.position.z, baseResult.position.z, 'Position Z should fall back to rawZ when filter returns -Infinity');
+});
+
