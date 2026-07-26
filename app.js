@@ -637,7 +637,18 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   // ── 3. POSITION — depth-aware Z offset + position ──
   const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
-  const localOffset = new THREE.Vector3(0, 0, -filteredScale * 0.02 * depthFactor);
+  
+  // Lenskart-level realism: Pull the active entry to apply per-frame nose pad offsets
+  const activeEntry = GLASSES_CATALOG.find(g => g.id === state.currentGlassesId);
+  const frameYOffset = activeEntry?.yOffset || 0;
+  const frameZOffset = activeEntry?.zOffset || 0;
+
+  // We push the glasses much deeper (-0.06 default) so they don't float.
+  const localOffset = new THREE.Vector3(
+    0, 
+    filteredScale * frameYOffset, 
+    -filteredScale * (0.06 + frameZOffset) * depthFactor
+  );
   localOffset.applyQuaternion(target.quat);
 
   const rawX = res.anchorWorld.x + localOffset.x;
