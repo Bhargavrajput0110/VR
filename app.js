@@ -455,13 +455,15 @@ function extractRotation(matrixArray) {
   const sc   = new THREE.Vector3();
   mat.decompose(pos, rawQuat, sc);
 
-  // Single deterministic correction for the mirrored selfie camera —
-  // do NOT negate individual Euler components, it breaks under combined
-  // pitch+yaw+roll. Compose in quaternion space instead.
-  const mirrorFix = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), Math.PI
-  );
-  return mirrorFix.multiply(rawQuat);
+  // The selfie camera is mirrored horizontally. MediaPipe is right-handed (Y down, Z away).
+  // Three.js is right-handed (Y up, Z towards).
+  // This coordinate swap + mirroring mathematically equates to negating the Y and Z axes
+  // of the quaternion. This correctly mirrors Yaw and Roll while preserving Pitch,
+  // completely avoiding Euler gimbal lock!
+  rawQuat.y = -rawQuat.y;
+  rawQuat.z = -rawQuat.z;
+
+  return rawQuat;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
