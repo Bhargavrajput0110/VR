@@ -186,7 +186,7 @@ const GLASSES_CATALOG = [
     category: 'eyeglasses',
     faceShapes: ['oval', 'heart'],
     swatches: [
-      { label: 'Crystal',  color: '#e8e0d0', tint: 0xe8e0d0 },
+      { label: 'Crystal',  color: '#e8e0d0', tint: 0xe8e0d0, transparent: true },
       { label: 'Pink',     color: '#e07080', tint: 0xe07080 },
       { label: 'Black',    color: '#1a1a1a', tint: 0x111111 },
     ],
@@ -372,15 +372,15 @@ function initThree() {
   pmrem.dispose();
   scene.environment = envMap;
 
-  // Lighting rig
-  const ambient  = new THREE.AmbientLight(0xffffff, 0.8);
-  const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+  // Lighting rig (Boosted for PBR glossy realism)
+  const ambient  = new THREE.AmbientLight(0xffffff, 1.2);
+  const keyLight = new THREE.DirectionalLight(0xffffff, 3.0);
   keyLight.position.set(3, 5, 6);
-  const fillLight = new THREE.DirectionalLight(0xfff4e0, 0.6);
+  const fillLight = new THREE.DirectionalLight(0xfff4e0, 1.2);
   fillLight.position.set(-3, 2, 4);
-  const rimLight  = new THREE.PointLight(0xffeedd, 0.8, 30);
+  const rimLight  = new THREE.PointLight(0xffeedd, 1.5, 30);
   rimLight.position.set(0, -2, 4);
-  const topLight  = new THREE.DirectionalLight(0xffffff, 0.4);
+  const topLight  = new THREE.DirectionalLight(0xffffff, 0.8);
   topLight.position.set(0, 8, 2);
   
   scene.add(ambient, keyLight, topLight);
@@ -950,22 +950,47 @@ function normalizeModel(scene, entry) {
 // ─────────────────────────────────────────────────────────────────────────────
 // COLOR VARIANTS — apply tint to loaded model
 // ─────────────────────────────────────────────────────────────────────────────
-function applyColorTint(group, hexColor) {
-  const col = new THREE.Color(hexColor);
+function applyColorTint(group, swatch) {
+  const col = new THREE.Color(swatch.tint);
   group.traverse(child => {
     if (child.isMesh) {
-      if (Array.isArray(child.material)) {
-        child.material.forEach(m => {
-          if (m && !m._originalColor) m._originalColor = m.color?.clone();
-          if (m?.color) m.color.set(col);
-          if (m?.emissive) m.emissive.set(0x000000);
-        });
-      } else if (child.material) {
-        const m = child.material;
+      if (!Array.isArray(child.material)) {
+        child.material = [child.material];
+      }
+      
+      const newMaterials = child.material.map(m => {
+        if (!m) return m;
+        
+        // If it's a transparent swatch (like Crystal), upgrade to a high-end PBR Transmission shader
+        if (swatch.transparent && !m.transparent) {
+          const pbrMat = new THREE.MeshPhysicalMaterial({
+            color: col,
+            transmission: 1.0,      // Glass-like transparency
+            opacity: 1.0,           // Must be 1.0 for transmission
+            transparent: true,
+            roughness: 0.05,        // Glossy plastic
+            metalness: 0.0,
+            ior: 1.5,               // Polycarbonate plastic index of refraction
+            thickness: 0.05,        // Simulates volume for refraction
+            envMapIntensity: 2.5,   // Aggressive reflections
+            clearcoat: 1.0,
+            clearcoatRoughness: 0.05
+          });
+          pbrMat._originalColor = m.color?.clone() || col.clone();
+          return pbrMat;
+        }
+
+        // Standard tint for non-transparent materials
         if (!m._originalColor) m._originalColor = m.color?.clone();
         if (m.color) m.color.set(col);
         if (m.emissive) m.emissive.set(0x000000);
-      }
+        // Boost envMap to make all plastics look premium
+        if (m.envMapIntensity !== undefined) m.envMapIntensity = 2.0;
+        
+        return m;
+      });
+
+      child.material = newMaterials.length === 1 ? newMaterials[0] : newMaterials;
     }
   });
 }
@@ -1052,7 +1077,7 @@ async function setActiveGlasses(id, swatchIdx = 0) {
 
   // Apply color tint from selected swatch
   const swatch = entry.swatches?.[swatchIdx];
-  if (swatch) applyColorTint(model, swatch.tint);
+  if (swatch) applyColorTint(model, swatch);
 
   glassesGroup.add(model);
   showLoading(false);
