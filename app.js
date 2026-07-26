@@ -614,21 +614,25 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const filteredScale = res.scale;
   target.scale.setScalar(filteredScale);
 
+  let fx = 0, fy = 0, fz = 0;
   // ── 2. ROTATION — from MediaPipe facial transform matrix ──
   if (transformMatrix) {
     const rawQuat = extractRotation(transformMatrix);
     const euler   = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
 
     // Filter each Euler angle independently
-    const fx = OEF.rx.filter(euler.x, timestamp);
-    const fy = OEF.ry.filter(euler.y, timestamp);
-    const fz = OEF.rz.filter(euler.z, timestamp);
+    fx = OEF.rx.filter(euler.x, timestamp);
+    fy = OEF.ry.filter(euler.y, timestamp);
+    fz = OEF.rz.filter(euler.z, timestamp);
 
     // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
     // 8 degrees = ~0.14 radians
     const pantoscopicTilt = 0.14;
 
     target.quat.setFromEuler(new THREE.Euler(fx + pantoscopicTilt, fy, fz, 'XYZ'));
+  } else {
+    const e = new THREE.Euler().setFromQuaternion(target.quat, 'XYZ');
+    fx = e.x; fy = e.y; fz = e.z;
   }
 
   // ── 3. POSITION — depth-aware Z offset + position ──
@@ -648,15 +652,15 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   // Scale occluder (Cylinder radius is 0.8, height is 2)
   // We want the width (X) to match the face width, height (Y) to cover the ears, and depth (Z) to go back.
-  occluderMesh.scale.set(filteredScale * 0.95, filteredScale * 1.5, filteredScale * 1.0);
+  occluderMesh.scale.set(filteredScale * 0.95, filteredScale * 1.5, filteredScale * 0.7);
   
   // Revert the pantoscopic tilt for the occluder so the "head" doesn't tilt down with the glasses
   const headEuler = new THREE.Euler(fx, fy, fz, 'XYZ');
   occluderMesh.quaternion.setFromEuler(headEuler);
   
   // Position occluder pushed backwards into the head.
-  // Center is pushed back so the front wall of the cylinder sits exactly behind the glasses lenses
-  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.6);
+  // Center is pushed back so the front wall of the cylinder sits completely behind the glasses lenses
+  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.7);
   occluderOffset.applyQuaternion(target.quat);
   occluderMesh.position.set(
     filteredX + occluderOffset.x,
