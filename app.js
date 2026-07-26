@@ -22,7 +22,7 @@ import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
 import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=25';
+import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=28';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -47,16 +47,16 @@ const IDB_VERSION       = 12;
 
 
 // One Euro filters for each DOF (X, Y, Z position + scale)
-// minCutoff=0.8 → less lag when still; beta=0.05 → much faster response when moving
+// Much more responsive minCutoff for instantaneous tracking
 const OEF = {
-  x:     new OneEuroFilter(30, 0.8, 0.05, 1.0),
-  y:     new OneEuroFilter(30, 0.8, 0.05, 1.0),
-  z:     new OneEuroFilter(30, 0.5, 0.02, 1.0),
-  scale: new OneEuroFilter(30, 0.5, 0.02, 1.0),
+  x:     new OneEuroFilter(30, 2.0, 0.05, 1.0),
+  y:     new OneEuroFilter(30, 2.0, 0.05, 1.0),
+  z:     new OneEuroFilter(30, 2.0, 0.05, 1.0),
+  scale: new OneEuroFilter(30, 1.5, 0.05, 1.0),
   // Rotation (Euler angles separately)
-  rx:    new OneEuroFilter(30, 1.0, 0.05, 1.0),
-  ry:    new OneEuroFilter(30, 1.0, 0.05, 1.0),
-  rz:    new OneEuroFilter(30, 1.0, 0.05, 1.0),
+  rx:    new OneEuroFilter(30, 2.0, 0.05, 1.0),
+  ry:    new OneEuroFilter(30, 2.0, 0.05, 1.0),
+  rz:    new OneEuroFilter(30, 2.0, 0.05, 1.0),
 };
 
 function resetAllFilters() {
@@ -332,17 +332,13 @@ const el = {
 // ─────────────────────────────────────────────────────────────────────────────
 // THREE.JS SETUP
 // ─────────────────────────────────────────────────────────────────────────────
-let renderer, scene, orthoCamera, glassesGroup, faceDotsMesh, envMap, occluderMesh;
+let renderer, scene, mainCamera, glassesGroup, faceDotsMesh, envMap, occluderMesh;
 const clock = new THREE.Clock();
 
-function makeOrthoCamera() {
+function makePerspectiveCamera() {
   const aspect = window.innerWidth / window.innerHeight;
-  const halfH  = 1.0;
-  return new THREE.OrthographicCamera(
-    -halfH * aspect, halfH * aspect,
-     halfH,         -halfH,
-     0.01, 100
-  );
+  // ~63 degrees FOV is a common mobile webcam equivalent
+  return new THREE.PerspectiveCamera(63, aspect, 0.01, 100);
 }
 
 function initThree() {
@@ -363,8 +359,8 @@ function initThree() {
   renderer.outputColorSpace    = THREE.SRGBColorSpace;
 
   scene = new THREE.Scene();
-  orthoCamera = makeOrthoCamera();
-  orthoCamera.position.z = 5;
+  mainCamera = makePerspectiveCamera();
+  mainCamera.position.z = 2.5; // Sit slightly closer for AR scale
 
   // Environment map for PBR reflections
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -422,11 +418,15 @@ function onResize() {
   const h = window.innerHeight;
   renderer.setSize(w, h);
   const aspect = w / h;
-  orthoCamera.left   = -aspect;
-  orthoCamera.right  =  aspect;
-  orthoCamera.top    =  1;
-  orthoCamera.bottom = -1;
-  orthoCamera.updateProjectionMatrix();
+  if (mainCamera.isPerspectiveCamera) {
+    mainCamera.aspect = aspect;
+  } else {
+    mainCamera.left   = -aspect;
+    mainCamera.right  =  aspect;
+    mainCamera.top    =  1;
+    mainCamera.bottom = -1;
+  }
+  mainCamera.updateProjectionMatrix();
   el.debugCanvas.width  = w;
   el.debugCanvas.height = h;
   syncProductCardBottom();
@@ -608,7 +608,7 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
     timestamp
   };
 
-  const res = calculateScaleAndPosition(lmArray, viewportOptions, filterState);
+  const res = calculateScaleAndPosition(lmArray, viewportOptions, filterState, mainCamera);
   if (!res) return;
 
   const filteredScale = res.scale;
@@ -775,28 +775,11 @@ function animate(nowMs) {
     }
   }
 
-  // ── Apply adaptive LERP / instant snap to glasses group ──
+  // ── Instant Snap Tracking (Zero Lag) ──
   if (glassesGroup) {
-    if (_firstDetect) {
-      // INSTANT SNAP on first detection — no slide-in drift
-      glassesGroup.position.copy(target.position);
-      glassesGroup.scale.copy(target.scale);
-      glassesGroup.quaternion.copy(target.quat);
-      _firstDetect = false;
-    } else {
-      // Compute velocity (change magnitude since last frame)
-      const velPos   = glassesGroup.position.distanceTo(target.position);
-      const velScale = Math.abs(glassesGroup.scale.x - target.scale.x);
-
-      // Adaptive lerp factors
-      const lerpPos   = adaptiveLerp(LERP_POS_MIN,   LERP_POS_MAX,   velPos);
-      const lerpScale = adaptiveLerp(LERP_SCALE_MIN, LERP_SCALE_MAX, velScale);
-      const lerpRot   = adaptiveLerp(LERP_ROT_MIN,   LERP_ROT_MAX,   velPos);
-
-      glassesGroup.position.lerp(target.position, lerpPos);
-      glassesGroup.scale.lerp(target.scale, lerpScale);
-      glassesGroup.quaternion.slerp(target.quat, lerpRot);
-    }
+    glassesGroup.position.copy(target.position);
+    glassesGroup.scale.copy(target.scale);
+    glassesGroup.quaternion.copy(target.quat);
   }
 
   if (state.debugMode && el.triCount) {
@@ -805,7 +788,7 @@ function animate(nowMs) {
     el.objCount.textContent = info.render.calls;
   }
 
-  renderer.render(scene, orthoCamera);
+  renderer.render(scene, mainCamera);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1146,7 +1129,7 @@ async function capturePhoto() {
   ctx.restore();
 
   // Draw three.js overlay (already rendered, preserveDrawingBuffer: true)
-  renderer.render(scene, orthoCamera); // force fresh render
+  renderer.render(scene, mainCamera); // force fresh render
   ctx.drawImage(el.threeCanvas, 0, 0, w, h);
 
   // Download

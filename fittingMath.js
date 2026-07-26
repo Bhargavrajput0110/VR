@@ -136,9 +136,15 @@ function landmarkToWorld(lm, viewportOptions = {}, zOverride = undefined) {
   const px = offX + (1.0 - lm.x) * rvw;
   const py = offY + lm.y * rvh;
 
-  const halfW = windowAspect;
-  const worldX =  (px / w) * (2 * halfW) - halfW;
-  const worldY = -((py / h) * 2 - 1);
+  // ── True 3D Perspective Projection (matches THREE.PerspectiveCamera) ──
+  // Camera FOV = 63 degrees, Camera Z = 2.5, Focal Plane Z = 0
+  const fovRad = 63 * (Math.PI / 180);
+  const distance = 2.5; // distance from camera to focal plane
+  const planeHeight = 2 * Math.tan(fovRad / 2) * distance;
+  const planeWidth  = planeHeight * windowAspect;
+
+  const worldX =  ((px / w) - 0.5) * planeWidth;
+  const worldY = -((py / h) - 0.5) * planeHeight;
   const worldZ = zOverride !== undefined ? zOverride : (lm.z !== undefined ? lm.z : 0.05);
 
   return {
