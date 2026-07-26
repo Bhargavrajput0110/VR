@@ -725,8 +725,8 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   // Lenskart-level scale calibration: The width of physical glasses is designed to match 
   // the width of the face at the temples (so the arms can wrap the ears).
   // We use temple width as the absolute source of truth for 3D model scale.
-  // Multiplier tuned to perfectly match physical frame width.
-  const rawScale = templeW * 1.55;
+  // Multiplier tuned to perfectly match physical frame width (approx 15% wider than temples for hinges).
+  const rawScale = templeW * 1.15;
   const filteredScale = OEF.scale.filter(rawScale, timestamp);
   target.scale.setScalar(Math.max(filteredScale, 0.01));
 
