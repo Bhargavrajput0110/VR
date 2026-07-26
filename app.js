@@ -603,7 +603,8 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   const filterState = {
     scaleFilter: OEF.scale,
-    posFilters: { x: OEF.x, y: OEF.y, z: OEF.z },
+    // Do not pass posFilters because app.js applies quaternion offsets and filters position itself.
+    // Passing posFilters here causes double-filtering and NaN corruption.
     timestamp
   };
 
