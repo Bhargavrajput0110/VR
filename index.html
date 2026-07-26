@@ -167,40 +167,43 @@
     <span id="faceShapeLabel">Detecting…</span>
   </div>
 
-  <!-- ══════════════════ PRODUCT CARD ══════════════════ -->
-  <div id="productInfoCard" class="product-card hidden">
-    <div class="pc-info">
-      <div class="pc-brand" id="piBrand">Luceandombra</div>
-      <div class="pc-name" id="piName">Classic Aviator</div>
-      <div class="pc-rating">
-        <span class="pc-stars" id="piStars">★★★★☆</span>
-        <span class="pc-reviews" id="piReviews">(2,341)</span>
+  <!-- ══════════════════ BOTTOM UI STACK ══════════════════ -->
+  <div class="ui-bottom-stack">
+    <!-- ══════════════════ PRODUCT CARD ══════════════════ -->
+    <div id="productInfoCard" class="product-card hidden">
+      <div class="pc-info">
+        <div class="pc-brand" id="piBrand">Luceandombra</div>
+        <div class="pc-name" id="piName">Classic Aviator</div>
+        <div class="pc-rating">
+          <span class="pc-stars" id="piStars">★★★★☆</span>
+          <span class="pc-reviews" id="piReviews">(2,341)</span>
+        </div>
+        <!-- Color swatches -->
+        <div class="pc-swatches" id="piSwatches"></div>
       </div>
-      <!-- Color swatches -->
-      <div class="pc-swatches" id="piSwatches"></div>
+      <div class="pc-right">
+        <div class="pc-price" id="piPrice">₹ 1,999</div>
+        <button class="pc-buy-btn" id="pcBuyBtn">Add to Cart</button>
+      </div>
     </div>
-    <div class="pc-right">
-      <div class="pc-price" id="piPrice">₹ 1,999</div>
-      <button class="pc-buy-btn" id="pcBuyBtn">Add to Cart</button>
-    </div>
-  </div>
 
-  <!-- ══════════════════ CATEGORY TABS ══════════════════ -->
-  <div id="categoryTabs" class="category-tabs hidden">
-    <button class="cat-tab active" data-cat="all">All</button>
-    <button class="cat-tab" data-cat="eyeglasses">Eyeglasses</button>
-    <button class="cat-tab" data-cat="sunglasses">Sunglasses</button>
-    <button class="cat-tab" data-cat="kids">Kids</button>
-  </div>
-
-  <!-- ══════════════════ GLASSES PANEL ══════════════════ -->
-  <div id="glassesPanel" class="glasses-panel hidden">
-    <div class="gp-header">
-      <span class="gp-title">Choose Frame</span>
-      <span class="gp-count" id="gpCount">10 styles</span>
+    <!-- ══════════════════ CATEGORY TABS ══════════════════ -->
+    <div id="categoryTabs" class="category-tabs hidden">
+      <button class="cat-tab active" data-cat="all">All</button>
+      <button class="cat-tab" data-cat="eyeglasses">Eyeglasses</button>
+      <button class="cat-tab" data-cat="sunglasses">Sunglasses</button>
+      <button class="cat-tab" data-cat="kids">Kids</button>
     </div>
-    <div id="glassesRow" class="glasses-row">
-      <!-- Populated by JS -->
+
+    <!-- ══════════════════ GLASSES PANEL ══════════════════ -->
+    <div id="glassesPanel" class="glasses-panel hidden">
+      <div class="gp-header">
+        <span class="gp-title">Choose Frame</span>
+        <span class="gp-count" id="gpCount">10 styles</span>
+      </div>
+      <div id="glassesRow" class="glasses-row">
+        <!-- Populated by JS -->
+      </div>
     </div>
   </div>
 

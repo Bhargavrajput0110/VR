@@ -548,7 +548,9 @@ function extractRotation(matrixArray) {
   const sc   = new THREE.Vector3();
   mat.decompose(pos, quat, sc);
   const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
-  const mirrored = new THREE.Euler(euler.x, -euler.y, -euler.z, 'XYZ');
+  // Tilt glasses up slightly (subtract ~0.15 rads from pitch) to prevent them looking down
+  const tiltX = euler.x - 0.15;
+  const mirrored = new THREE.Euler(tiltX, -euler.y, -euler.z, 'XYZ');
   return new THREE.Quaternion().setFromEuler(mirrored);
 }
 
@@ -712,8 +714,8 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const eyeW     = landmarkToWorld(lo || li).distanceTo(landmarkToWorld(ro || ri)); // eye span
 
   // Weighted average: temple width is most stable
-  // Increased multiplier from 1.05 to 1.25 to match real-world physical frame width
-  const rawScale = (templeW * 0.60 + eyeW * 0.25 + ipdW * 0.15) * 1.25;
+  // Increased multiplier from 1.25 to 1.45 to match real-world physical frame width
+  const rawScale = (templeW * 0.60 + eyeW * 0.25 + ipdW * 0.15) * 1.45;
   const filteredScale = OEF.scale.filter(rawScale, timestamp);
   target.scale.setScalar(Math.max(filteredScale, 0.01));
 
@@ -748,10 +750,10 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   const anchorWorld = landmarkToWorld(anchor);
 
-  // Depth-aware Z offset: pull forward slightly (-0.08 instead of -0.22) so it doesn't sink into face
-  // Y offset: push slightly UP (+0.04) to match real nose bridge resting point
+  // Depth-aware Z offset: pull forward slightly (-0.02 instead of -0.08) so it doesn't sink into face
+  // Y offset: push slightly UP (+0.05) to match real nose bridge resting point
   const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
-  const localOffset = new THREE.Vector3(0, filteredScale * 0.04, -filteredScale * 0.08 * depthFactor);
+  const localOffset = new THREE.Vector3(0, filteredScale * 0.05, -filteredScale * 0.02 * depthFactor);
   localOffset.applyQuaternion(target.quat);
 
   // Apply One Euro Filter to world position
