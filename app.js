@@ -50,6 +50,8 @@ const LM = {
   // Core eye anchors
   L_EYE_INNER:   133,   // left  inner canthus
   R_EYE_INNER:   362,   // right inner canthus
+  L_IRIS:        468,   // left  iris center
+  R_IRIS:        473,   // right iris center
   L_EYE_OUTER:    33,   // left  outer canthus
   R_EYE_OUTER:   263,   // right outer canthus
   L_EYE_TOP:     159,   // left  upper eyelid mid
@@ -419,7 +421,7 @@ const el = {
 // ─────────────────────────────────────────────────────────────────────────────
 // THREE.JS SETUP
 // ─────────────────────────────────────────────────────────────────────────────
-let renderer, scene, orthoCamera, glassesGroup, faceDotsMesh, envMap;
+let renderer, scene, orthoCamera, glassesGroup, faceDotsMesh, envMap, occluderMesh;
 const clock = new THREE.Clock();
 
 function makeOrthoCamera() {
@@ -476,6 +478,13 @@ function initThree() {
   glassesGroup = new THREE.Group();
   glassesGroup.visible = false;
   scene.add(glassesGroup);
+
+  // ── OCCLUDER MESH (Invisible Head) ──
+  const occluderGeo = new THREE.SphereGeometry(1, 32, 32);
+  const occluderMat = new THREE.MeshBasicMaterial({ colorWrite: false }); // Invisibility cloak
+  occluderMesh = new THREE.Mesh(occluderGeo, occluderMat);
+  occluderMesh.visible = false;
+  scene.add(occluderMesh);
 
   // AR face dots
   const dotsGeo = new THREE.BufferGeometry();
@@ -699,23 +708,23 @@ function adaptiveLerp(min, max, velocity) {
 // FACE RESULTS  — precision multi-point anchor + One Euro filtered
 // ─────────────────────────────────────────────────────────────────────────────
 function onFaceResults(lmArray, transformMatrix, timestamp) {
-  // ── 1. SCALE — average of 3 independent measurements ──
+  // ── 1. SCALE — Iris-based Pupillary Distance (PD) anchoring ──
   const lt = safeLM(lmArray, LM.L_TEMPLE);
   const rt = safeLM(lmArray, LM.R_TEMPLE);
-  const li = safeLM(lmArray, LM.L_EYE_INNER);
-  const ri = safeLM(lmArray, LM.R_EYE_INNER);
-  const lo = safeLM(lmArray, LM.L_EYE_OUTER);
-  const ro = safeLM(lmArray, LM.R_EYE_OUTER);
+  // Try to use true Iris landmarks if available (478 pts), fallback to inner canthus
+  const hasIris = lmArray.length >= 478;
+  const li = safeLM(lmArray, hasIris ? LM.L_IRIS : LM.L_EYE_INNER);
+  const ri = safeLM(lmArray, hasIris ? LM.R_IRIS : LM.R_EYE_INNER);
 
-  if (!lt || !rt || !li || !ri) return; // require key landmarks
+  if (!lt || !rt || !li || !ri) return;
 
   const templeW  = landmarkToWorld(lt).distanceTo(landmarkToWorld(rt));   // full face width
   const ipdW     = landmarkToWorld(li).distanceTo(landmarkToWorld(ri));   // inter-pupillary
-  const eyeW     = landmarkToWorld(lo || li).distanceTo(landmarkToWorld(ro || ri)); // eye span
 
-  // Weighted average: temple width is most stable
-  // Increased multiplier from 1.25 to 1.45 to match real-world physical frame width
-  const rawScale = (templeW * 0.60 + eyeW * 0.25 + ipdW * 0.15) * 1.45;
+  // Iris-based PD implies 11.7mm physical width per iris, giving us extreme accuracy.
+  // We blend temple width (most stable) and true PD (highest anatomical accuracy).
+  // Multiplier boosted to 1.55 because physical frames are wider than the temple-to-temple distance.
+  const rawScale = (templeW * 0.70 + ipdW * 0.30) * 1.55;
   const filteredScale = OEF.scale.filter(rawScale, timestamp);
   target.scale.setScalar(Math.max(filteredScale, 0.01));
 
@@ -736,15 +745,15 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const nb = safeLM(lmArray, LM.NOSE_BRIDGE);
   if (!nb) return;
 
-  // Eye midpoint (most stable anchor — moves less with head tilt than nose bridge)
+  // Eye midpoint (using true Iris centers if available)
   const eyeMidX = (li.x + ri.x) * 0.5;
   const eyeMidY = (li.y + ri.y) * 0.5;
   const eyeMidZ = (li.z + ri.z) * 0.5;
   const eyeMid  = { x: eyeMidX, y: eyeMidY, z: eyeMidZ };
 
-  // Weighted blend: rely more on nose bridge for height (Y) to prevent glasses from sitting too low
+  // Weighted blend: heavily prioritize the bridge of the nose for physical resting point
   const anchorX = eyeMid.x * 0.50 + nb.x * 0.50;
-  const anchorY = eyeMid.y * 0.30 + nb.y * 0.70;
+  const anchorY = eyeMid.y * 0.25 + nb.y * 0.75;
   const anchorZ = eyeMid.z * 0.50 + nb.z * 0.50;
   const anchor  = { x: anchorX, y: anchorY, z: anchorZ };
 
@@ -766,6 +775,21 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const filteredZ = OEF.z.filter(rawZ, timestamp);
 
   target.position.set(filteredX, filteredY, filteredZ);
+
+  // ── 3.5 SYNC OCCLUDER MESH ──
+  // Scale occluder to roughly match head volume: width (temples), height (chin to forehead), depth (ear to nose)
+  occluderMesh.scale.set(filteredScale * 0.85, filteredScale * 1.1, filteredScale * 1.0);
+  occluderMesh.quaternion.copy(target.quat);
+  
+  // Position occluder exactly at the anchor, but pushed backwards into the head so it hides the temples
+  // but doesn't block the front of the glasses.
+  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.5);
+  occluderOffset.applyQuaternion(target.quat);
+  occluderMesh.position.set(
+    filteredX + occluderOffset.x,
+    filteredY + occluderOffset.y,
+    filteredZ + occluderOffset.z
+  );
 
   // ── 4. Face shape every 60 frames (more stable) ──
   if (state.frameCount % 60 === 0) {
@@ -835,6 +859,7 @@ function animate(nowMs) {
         clearTimeout(state.faceLostTimer);
         showNoFaceUI(false);
         glassesGroup.visible = true;
+        if (occluderMesh) occluderMesh.visible = true;
         el.faceScanOval?.classList.add('hidden');
       }
 
@@ -850,6 +875,7 @@ function animate(nowMs) {
         state.faceLostTimer = setTimeout(() => {
           showNoFaceUI(true);
           glassesGroup.visible = false;
+          if (occluderMesh) occluderMesh.visible = false;
           el.faceScanOval?.classList.remove('hidden');
           resetAllFilters(); // reset filters so next detect starts clean
         }, FACE_LOST_MS);
@@ -913,7 +939,7 @@ async function initMediaPipe() {
     minFaceDetectionConfidence:         0.60,
     minFacePresenceConfidence:          0.60,
     minTrackingConfidence:              0.55,
-    outputFaceBlendshapes:              false,
+    outputFaceBlendshapes:              true, // Required to extract 478 landmarks (Iris)
     outputFacialTransformationMatrixes: true,
   });
 }
@@ -1461,6 +1487,8 @@ function showCameraError(err) {
 // STOP / RESET
 // ─────────────────────────────────────────────────────────────────────────────
 function stopCamera() {
+  if (!state.isRunning) return;
+  
   state.isRunning    = false;
   state.faceDetected = false;
   _firstDetect       = true;
@@ -1473,6 +1501,7 @@ function stopCamera() {
   }
   el.webcam.srcObject = null;
   glassesGroup.visible = false;
+  if (occluderMesh) occluderMesh.visible = false;
   dotsOpacity = 0;
   if (faceDotsMesh) faceDotsMesh.material.opacity = 0;
   target.scale.set(0.001, 0.001, 0.001);
