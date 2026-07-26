@@ -61,6 +61,7 @@ const LM = {
 
   // Nose
   NOSE_BRIDGE:   168,   // glabella / nose bridge top
+  NOSE_REST:       6,   // lower nose bridge (where physical glasses sit)
   NOSE_TIP:        4,   // tip of nose
   NOSE_L:        129,   // left  nose wing
   NOSE_R:        358,   // right nose wing
@@ -709,7 +710,7 @@ function adaptiveLerp(min, max, velocity) {
 // FACE RESULTS  — precision multi-point anchor + One Euro filtered
 // ─────────────────────────────────────────────────────────────────────────────
 function onFaceResults(lmArray, transformMatrix, timestamp) {
-  // ── 1. SCALE — Iris-based Pupillary Distance (PD) anchoring ──
+  // ── 1. SCALE — Temple-based Face Width anchoring ──
   const lt = safeLM(lmArray, LM.L_TEMPLE);
   const rt = safeLM(lmArray, LM.R_TEMPLE);
   // Try to use true Iris landmarks if available (478 pts), fallback to inner canthus
@@ -720,12 +721,12 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   if (!lt || !rt || !li || !ri) return;
 
   const templeW  = landmarkToWorld(lt).distanceTo(landmarkToWorld(rt));   // full face width
-  const ipdW     = landmarkToWorld(li).distanceTo(landmarkToWorld(ri));   // inter-pupillary
 
-  // Iris-based PD implies 11.7mm physical width per iris, giving us extreme accuracy.
-  // We blend temple width (most stable) and true PD (highest anatomical accuracy).
-  // Multiplier boosted to 1.55 because physical frames are wider than the temple-to-temple distance.
-  const rawScale = (templeW * 0.70 + ipdW * 0.30) * 1.55;
+  // Lenskart-level scale calibration: The width of physical glasses is designed to match 
+  // the width of the face at the temples (so the arms can wrap the ears).
+  // We use temple width as the absolute source of truth for 3D model scale.
+  // Multiplier tuned to perfectly match physical frame width.
+  const rawScale = templeW * 1.55;
   const filteredScale = OEF.scale.filter(rawScale, timestamp);
   target.scale.setScalar(Math.max(filteredScale, 0.01));
 
@@ -742,21 +743,16 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
     target.quat.setFromEuler(new THREE.Euler(fx, fy, fz, 'XYZ'));
   }
 
-  // ── 3. POSITION — weighted anchor: 60% eye-midpoint + 40% nose bridge ──
-  const nb = safeLM(lmArray, LM.NOSE_BRIDGE);
-  if (!nb) return;
+  // ── 3. POSITION — Lenskart multi-point nose bridge anchor ──
+  // The physical resting point of glasses is on the lower bridge of the nose.
+  // This guarantees perfect centering between the eyes AND vertical alignment with the ears.
+  const nr = safeLM(lmArray, LM.NOSE_REST);
+  if (!nr) return;
 
-  // Eye midpoint (using true Iris centers if available)
-  const eyeMidX = (li.x + ri.x) * 0.5;
-  const eyeMidY = (li.y + ri.y) * 0.5;
-  const eyeMidZ = (li.z + ri.z) * 0.5;
-  const eyeMid  = { x: eyeMidX, y: eyeMidY, z: eyeMidZ };
-
-  // Anchor exactly at the optical center (Iris midpoint) for X and Y.
-  // We use nose bridge for Z to maintain depth stability.
-  const anchorX = eyeMid.x;
-  const anchorY = eyeMid.y;
-  const anchorZ = eyeMid.z * 0.50 + nb.z * 0.50;
+  // Anchor exactly at the lower nose bridge for X, Y, and Z.
+  const anchorX = nr.x;
+  const anchorY = nr.y;
+  const anchorZ = nr.z;
   const anchor  = { x: anchorX, y: anchorY, z: anchorZ };
 
   const anchorWorld = landmarkToWorld(anchor);
