@@ -484,6 +484,7 @@ function initThree() {
   const occluderMat = new THREE.MeshBasicMaterial({ colorWrite: false }); // Invisibility cloak
   occluderMesh = new THREE.Mesh(occluderGeo, occluderMat);
   occluderMesh.visible = false;
+  occluderMesh.renderOrder = -1; // GUARANTEE occluder renders before glasses so depth buffer works
   scene.add(occluderMesh);
 
   // AR face dots
@@ -776,14 +777,15 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   target.position.set(filteredX, filteredY, filteredZ);
 
-  // ── 3.5 SYNC OCCLUDER MESH ──
-  // Scale occluder to roughly match head volume: width (temples), height (chin to forehead), depth (ear to nose)
-  occluderMesh.scale.set(filteredScale * 0.85, filteredScale * 1.1, filteredScale * 1.0);
+  // Scale occluder (Sphere radius is 1, so diameter is 2)
+  // We use Z scale of 0.8, meaning the sphere extends 0.8 forward and 0.8 backward.
+  occluderMesh.scale.set(filteredScale * 0.85, filteredScale * 1.1, filteredScale * 0.8);
   occluderMesh.quaternion.copy(target.quat);
   
-  // Position occluder exactly at the anchor, but pushed backwards into the head so it hides the temples
-  // but doesn't block the front of the glasses.
-  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.5);
+  // Position occluder pushed backwards into the head.
+  // Since the front of the sphere reaches +0.8 (due to scale), we must push the center back by AT LEAST -0.8
+  // to ensure the front of the occluder stays behind the glasses lenses (Z=0).
+  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.95);
   occluderOffset.applyQuaternion(target.quat);
   occluderMesh.position.set(
     filteredX + occluderOffset.x,
