@@ -951,3 +951,108 @@ html, body {
     width: 560px;
   }
 }
+
+/* --- Calibration Overlay --- */
+#calibrationOverlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+  flex-direction: column;
+}
+
+#calibrationOverlay.hidden {
+  display: none !important;
+}
+
+.calibration-content {
+  text-align: center;
+  color: white;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.ring-container {
+  width: 100px;
+  height: 100px;
+  margin: 0 auto 20px;
+}
+
+.ring-container svg {
+  transform: rotate(-90deg);
+  width: 100%;
+  height: 100%;
+}
+
+.ring-bg {
+  fill: none;
+  stroke: rgba(255,255,255,0.2);
+  stroke-width: 8;
+}
+
+.ring-fill {
+  fill: none;
+  stroke: #00ff00;
+  stroke-width: 8;
+  stroke-dasharray: 283; /* 2 * pi * 45 ≈ 283 */
+  stroke-dashoffset: 283; /* Starts empty */
+  transition: stroke-dashoffset 0.1s linear;
+}
+
+#calibrationText {
+  font-size: 1.2rem;
+  margin: 0;
+  padding: 0 20px;
+}
+
+/* --- Controls --- */
+#controlsContainer {
+  position: absolute;
+  bottom: 20px;
+  left: 0; right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+  z-index: 100;
+}
+
+#controlsContainer.hidden {
+  display: none !important;
+}
+
+#widthControl {
+  background: rgba(0,0,0,0.5);
+  padding: 10px 20px;
+  border-radius: 20px;
+  color: white;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: sans-serif;
+}
+
+#widthControl label {
+  font-size: 0.9rem;
+}
+
+#widthControl input[type="range"] {
+  width: 120px;
+}
+
+#redoSizeBtn {
+  padding: 10px 20px;
+  background: white;
+  color: black;
+  border: none;
+  border-radius: 20px;
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+#redoSizeBtn.hidden, #widthControl.hidden {
+  display: none !important;
+}

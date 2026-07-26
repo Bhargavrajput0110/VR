@@ -1434,6 +1434,20 @@ function bindUIHandlers() {
   el.retryBtn?.addEventListener('click', onStartClick);
   el.backBtn?.addEventListener('click', stopCamera);
   el.captureHeaderBtn?.addEventListener('click', capturePhoto);
+  
+  el.redoSizeBtn?.addEventListener('click', () => {
+    state.calibration.status = 'uncalibrated';
+    state.calibration.samples = [];
+    state.calibration.calibratedTempleW = null;
+    el.calibrationOverlay?.classList.remove('hidden');
+    el.redoSizeBtn?.classList.add('hidden');
+    el.widthControl?.classList.add('hidden');
+  });
+
+  el.widthSlider?.addEventListener('input', (e) => {
+    state.calibration.userWidthAdjust = parseFloat(e.target.value);
+  });
+
   el.pcBuyBtn?.addEventListener('click', () => {
     const entry = GLASSES_CATALOG.find(g => g.id === state.currentGlassesId);
     alert(`Added "${entry?.name}" to cart!\n\nThis is a demo — connect to your store backend.`);

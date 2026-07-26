@@ -174,9 +174,11 @@ function landmarkToWorld(lm, viewportOptions = {}, zOverride = undefined) {
  * @param {Array} lmArray - Landmark array
  * @param {Object} [viewportOptions] - { width, height, videoWidth, videoHeight }
  * @param {Object} [filterState] - { scaleFilter, posFilters: {x, y, z}, timestamp }
+ * @param {Object} [calibrationData] - { status, calibratedTempleW, userWidthAdjust }
+ * @param {Object} [activeEntry] - The active glasses catalog entry
  * @returns {Object|null} { scale, position: {x, y, z}, templeW, anchorWorld }
  */
-function calculateScaleAndPosition(lmArray, viewportOptions = {}, filterState = {}) {
+function calculateScaleAndPosition(lmArray, viewportOptions = {}, filterState = {}, calibrationData = null, activeEntry = null) {
   const lt = safeLM(lmArray, LM.L_TEMPLE);
   const rt = safeLM(lmArray, LM.R_TEMPLE);
   const hasIris = lmArray && lmArray.length >= 478;
@@ -189,16 +191,23 @@ function calculateScaleAndPosition(lmArray, viewportOptions = {}, filterState = 
   const rtWorld = landmarkToWorld(rt, viewportOptions);
 
   const templeW = ltWorld.distanceTo(rtWorld);
-  const rawScale = templeW * 1.15;
+  let scale;
 
-  let filteredScale = rawScale;
-  if (filterState && filterState.scaleFilter && typeof filterState.scaleFilter.filter === 'function') {
-    filteredScale = filterState.scaleFilter.filter(rawScale, filterState.timestamp);
-    if (!Number.isFinite(filteredScale)) {
-      filteredScale = rawScale;
+  if (calibrationData && calibrationData.status === 'done') {
+    // If calibrated, bypass the noisy live calculation and One Euro filter entirely
+    const scaleMul = activeEntry?.anchor?.scaleMul || 1.15;
+    scale = calibrationData.calibratedTempleW * scaleMul * calibrationData.userWidthAdjust;
+  } else {
+    const rawScale = templeW * 1.15;
+    let filteredScale = rawScale;
+    if (filterState && filterState.scaleFilter && typeof filterState.scaleFilter.filter === 'function') {
+      filteredScale = filterState.scaleFilter.filter(rawScale, filterState.timestamp);
+      if (!Number.isFinite(filteredScale)) {
+        filteredScale = rawScale;
+      }
     }
+    scale = Math.max(filteredScale, 0.01);
   }
-  const scale = Math.max(filteredScale, 0.01);
 
   const nr = safeLM(lmArray, LM.NOSE_REST);
   if (!nr) return null;
