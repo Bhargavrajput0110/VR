@@ -205,12 +205,9 @@ function calculateScaleAndPosition(lmArray, viewportOptions = {}, filterState = 
 
   const anchorWorld = landmarkToWorld(nr, viewportOptions);
 
-  const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (scale * 4 + 0.001)));
-  const localOffsetZ = -scale * 0.06 * depthFactor; // Pushed back further to sit flush against the face
-
   const rawX = anchorWorld.x;
   const rawY = anchorWorld.y;
-  const rawZ = anchorWorld.z + localOffsetZ;
+  const rawZ = anchorWorld.z;
 
   let filteredX = rawX;
   let filteredY = rawY;

@@ -22,7 +22,7 @@ import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
 import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=29';
+import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=32';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -448,41 +448,17 @@ function landmarkToWorld(lm, zOverride) {
 // ─────────────────────────────────────────────────────────────────────────────
 // HEAD POSE
 // ─────────────────────────────────────────────────────────────────────────────
-function calculateRotationFromLandmarks(lmArray, viewportOptions) {
-  // Use known stable landmarks for physical rotation vectors
-  const leftTemple = safeLM(lmArray, LM.L_TEMPLE);
-  const rightTemple = safeLM(lmArray, LM.R_TEMPLE);
-  const forehead = safeLM(lmArray, LM.FOREHEAD);
-  const chin = safeLM(lmArray, LM.CHIN);
-
-  if (!leftTemple || !rightTemple || !forehead || !chin) return new THREE.Quaternion();
-
-  const ltWorld = importedLandmarkToWorld(leftTemple, viewportOptions);
-  const rtWorld = importedLandmarkToWorld(rightTemple, viewportOptions);
-  const fhWorld = importedLandmarkToWorld(forehead, viewportOptions);
-  const chinWorld = importedLandmarkToWorld(chin, viewportOptions);
-
-  const ltVec = new THREE.Vector3(ltWorld.x, ltWorld.y, ltWorld.z);
-  const rtVec = new THREE.Vector3(rtWorld.x, rtWorld.y, rtWorld.z);
-  const fhVec = new THREE.Vector3(fhWorld.x, fhWorld.y, fhWorld.z);
-  const chinVec = new THREE.Vector3(chinWorld.x, chinWorld.y, chinWorld.z);
-
-  // X-axis: Screen Right (User's physical Left Temple) to Screen Left (User's physical Right Temple)
-  // We want the local +X axis to point to Screen Right. 
-  // In a mirrored video, the user's physical Left Temple is on the right side of the screen!
-  const rightDir = new THREE.Vector3().subVectors(ltVec, rtVec).normalize();
-  
-  // Y-axis: Chin to Forehead
-  const upDir = new THREE.Vector3().subVectors(fhVec, chinVec).normalize();
-
-  // Z-axis (Forward): Cross Right and Up
-  const forwardDir = new THREE.Vector3().crossVectors(rightDir, upDir).normalize();
-  
-  // Re-orthogonalize Up to ensure a perfect rotation matrix
-  upDir.crossVectors(forwardDir, rightDir).normalize();
-
-  const mat = new THREE.Matrix4().makeBasis(rightDir, upDir, forwardDir);
-  return new THREE.Quaternion().setFromRotationMatrix(mat);
+function extractRotation(matrixArray) {
+  const mat = new THREE.Matrix4().fromArray(matrixArray);
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const sc   = new THREE.Vector3();
+  mat.decompose(pos, quat, sc);
+  const euler = new THREE.Euler().setFromQuaternion(quat, 'XYZ');
+  // Tilt glasses up slightly (subtract ~0.15 rads from pitch) to prevent them looking down
+  const tiltX = euler.x - 0.15;
+  const mirrored = new THREE.Euler(tiltX, -euler.y, -euler.z, 'XYZ');
+  return new THREE.Quaternion().setFromEuler(mirrored);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -639,23 +615,27 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   target.scale.setScalar(filteredScale);
 
   let fx = 0, fy = 0, fz = 0;
-  // ── 2. ROTATION — from custom landmark vectors ──
-  const rawQuat = calculateRotationFromLandmarks(lmArray, viewportOptions);
-  const euler = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
+  // ── 2. ROTATION — from MediaPipe facial transform matrix ──
+  if (transformMatrix) {
+    const rawQuat = extractRotation(transformMatrix);
+    const euler   = new THREE.Euler().setFromQuaternion(rawQuat, 'XYZ');
 
-  // Filter each Euler angle independently
-  fx = OEF.rx.filter(euler.x, timestamp);
-  fy = OEF.ry.filter(euler.y, timestamp);
-  fz = OEF.rz.filter(euler.z, timestamp);
+    // Filter each Euler angle independently
+    fx = OEF.rx.filter(euler.x, timestamp);
+    fy = OEF.ry.filter(euler.y, timestamp);
+    fz = OEF.rz.filter(euler.z, timestamp);
 
-  // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
-  // 8 degrees = ~0.14 radians
-  const pantoscopicTilt = 0.14;
+    // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
+    // 8 degrees = ~0.14 radians
+    const pantoscopicTilt = 0.14;
 
-  target.quat.setFromEuler(new THREE.Euler(fx + pantoscopicTilt, fy, fz, 'XYZ'));
+    target.quat.setFromEuler(new THREE.Euler(fx + pantoscopicTilt, fy, fz, 'XYZ'));
+  } else {
+    const e = new THREE.Euler().setFromQuaternion(target.quat, 'XYZ');
+    fx = e.x; fy = e.y; fz = e.z;
+  }
 
   // ── 3. POSITION — depth-aware Z offset + position ──
-  const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
   
   // Lenskart-level realism: Pull the active entry to apply per-frame nose pad offsets
   const activeEntry = GLASSES_CATALOG.find(g => g.id === state.currentGlassesId);
@@ -663,7 +643,6 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const frameZOffset = activeEntry?.zOffset || 0;
 
   // Apply ONLY manual per-frame offsets from the catalog. 
-  // DO NOT use massive default Z offsets here, as they cause pendulum swings when the head rotates!
   const localOffset = new THREE.Vector3(
     0, 
     filteredScale * frameYOffset, 
