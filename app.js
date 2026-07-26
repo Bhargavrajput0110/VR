@@ -391,7 +391,8 @@ function initThree() {
   scene.add(glassesGroup);
 
   // ── OCCLUDER MESH (Invisible Head) ──
-  const occluderGeo = new THREE.SphereGeometry(1, 32, 32);
+  // A Cylinder has straight walls, preventing the temples from clipping out of the cheeks/ears.
+  const occluderGeo = new THREE.CylinderGeometry(0.8, 0.6, 2, 32);
   const occluderMat = new THREE.MeshBasicMaterial({ colorWrite: false }); // Invisibility cloak
   occluderMesh = new THREE.Mesh(occluderGeo, occluderMat);
   occluderMesh.visible = false;
@@ -622,7 +623,11 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
     const fy = OEF.ry.filter(euler.y, timestamp);
     const fz = OEF.rz.filter(euler.z, timestamp);
 
-    target.quat.setFromEuler(new THREE.Euler(fx, fy, fz, 'XYZ'));
+    // Pantoscopic Tilt: Glasses naturally angle downwards towards the ears
+    // 8 degrees = ~0.14 radians
+    const pantoscopicTilt = 0.14;
+
+    target.quat.setFromEuler(new THREE.Euler(fx + pantoscopicTilt, fy, fz, 'XYZ'));
   }
 
   // ── 3. POSITION — depth-aware Z offset + position ──
@@ -640,15 +645,17 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
 
   target.position.set(filteredX, filteredY, filteredZ);
 
-  // Scale occluder (Sphere radius is 1, so diameter is 2)
-  // We use Z scale of 0.8, meaning the sphere extends 0.8 forward and 0.8 backward.
-  occluderMesh.scale.set(filteredScale * 0.85, filteredScale * 1.1, filteredScale * 0.8);
-  occluderMesh.quaternion.copy(target.quat);
+  // Scale occluder (Cylinder radius is 0.8, height is 2)
+  // We want the width (X) to match the face width, height (Y) to cover the ears, and depth (Z) to go back.
+  occluderMesh.scale.set(filteredScale * 0.95, filteredScale * 1.5, filteredScale * 1.0);
+  
+  // Revert the pantoscopic tilt for the occluder so the "head" doesn't tilt down with the glasses
+  const headEuler = new THREE.Euler(fx, fy, fz, 'XYZ');
+  occluderMesh.quaternion.setFromEuler(headEuler);
   
   // Position occluder pushed backwards into the head.
-  // Since the front of the sphere reaches +0.8 (due to scale), we must push the center back by AT LEAST -0.8
-  // to ensure the front of the occluder stays behind the glasses lenses (Z=0).
-  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.95);
+  // Center is pushed back so the front wall of the cylinder sits exactly behind the glasses lenses
+  const occluderOffset = new THREE.Vector3(0, -filteredScale * 0.1, -filteredScale * 0.6);
   occluderOffset.applyQuaternion(target.quat);
   occluderMesh.position.set(
     filteredX + occluderOffset.x,
