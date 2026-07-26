@@ -450,19 +450,24 @@ function landmarkToWorld(lm, zOverride) {
 // ─────────────────────────────────────────────────────────────────────────────
 function extractRotation(matrixArray) {
   const mat = new THREE.Matrix4().fromArray(matrixArray);
+  
+  // DIAGNOSTIC LOG (Press 'D' to enable debug mode and see this in console)
+  if (state.debugMode && state.frameCount % 10 === 0) {
+    const debugEuler = new THREE.Euler().setFromRotationMatrix(mat, 'XYZ');
+    console.log(`[Diagnostic] Pitch(X): ${(debugEuler.x*180/Math.PI).toFixed(1)}° | Yaw(Y): ${(debugEuler.y*180/Math.PI).toFixed(1)}° | Roll(Z): ${(debugEuler.z*180/Math.PI).toFixed(1)}°`);
+  }
+
   const pos = new THREE.Vector3();
   const rawQuat = new THREE.Quaternion();
   const sc   = new THREE.Vector3();
   mat.decompose(pos, rawQuat, sc);
 
-  // The selfie camera is mirrored horizontally. MediaPipe is right-handed (Y down, Z away).
-  // Three.js is right-handed (Y up, Z towards).
-  // This coordinate swap + mirroring mathematically equates to negating the Y and Z axes
-  // of the quaternion. This correctly mirrors Yaw and Roll while preserving Pitch,
-  // completely avoiding Euler gimbal lock!
-  rawQuat.y = -rawQuat.y;
-  rawQuat.z = -rawQuat.z;
-
+  // Pure mathematical elegance:
+  // MediaPipe space -> Three.js space requires C = diag(1, -1, -1)
+  // Screen Mirroring requires M = diag(-1, 1, 1)
+  // Total transform = M * C * R_mp * C * M
+  // Since M * C = diag(-1, -1, -1) = -I, and (-I)*R*(-I) = R.
+  // The raw MediaPipe matrix ALREADY perfectly represents the mirrored Three.js rotation!
   return rawQuat;
 }
 
