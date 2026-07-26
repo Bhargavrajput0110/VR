@@ -22,7 +22,7 @@ import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
 import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=28';
+import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=29';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -643,11 +643,12 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const frameYOffset = activeEntry?.yOffset || 0;
   const frameZOffset = activeEntry?.zOffset || 0;
 
-  // We push the glasses much deeper (-0.06 default) so they don't float.
+  // Apply ONLY manual per-frame offsets from the catalog. 
+  // DO NOT use massive default Z offsets here, as they cause pendulum swings when the head rotates!
   const localOffset = new THREE.Vector3(
     0, 
     filteredScale * frameYOffset, 
-    -filteredScale * (0.06 + frameZOffset) * depthFactor
+    filteredScale * frameZOffset // Usually 0, unless specifically calibrated for a weird 3D model
   );
   localOffset.applyQuaternion(target.quat);
 

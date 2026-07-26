@@ -145,7 +145,9 @@ function landmarkToWorld(lm, viewportOptions = {}, zOverride = undefined) {
 
   const worldX =  ((px / w) - 0.5) * planeWidth;
   const worldY = -((py / h) - 0.5) * planeHeight;
-  const worldZ = zOverride !== undefined ? zOverride : (lm.z !== undefined ? lm.z : 0.05);
+  // MediaPipe Z: negative = closer to camera. Three.js Z: positive = closer to camera.
+  // We invert lm.z and scale it to world coordinates (using planeWidth as face scale reference).
+  const worldZ = zOverride !== undefined ? zOverride : (lm.z !== undefined ? (-lm.z * planeWidth) : 0.05);
 
   return {
     x: worldX,
