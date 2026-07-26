@@ -22,6 +22,7 @@ import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
 import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -43,98 +44,7 @@ const IDB_DB_NAME       = 'lo_glb_cache_v12';
 const IDB_STORE_NAME    = 'glbs';
 const IDB_VERSION       = 12;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EXTENDED LANDMARK MAP  (MediaPipe 468-point canonical indices)
-// ─────────────────────────────────────────────────────────────────────────────
-const LM = {
-  // Core eye anchors
-  L_EYE_INNER:   133,   // left  inner canthus
-  R_EYE_INNER:   362,   // right inner canthus
-  L_IRIS:        468,   // left  iris center
-  R_IRIS:        473,   // right iris center
-  L_EYE_OUTER:    33,   // left  outer canthus
-  R_EYE_OUTER:   263,   // right outer canthus
-  L_EYE_TOP:     159,   // left  upper eyelid mid
-  R_EYE_TOP:     386,   // right upper eyelid mid
-  L_EYE_BOT:     145,   // left  lower eyelid mid
-  R_EYE_BOT:     374,   // right lower eyelid mid
 
-  // Nose
-  NOSE_BRIDGE:   168,   // glabella / nose bridge top
-  NOSE_REST:       6,   // lower nose bridge (where physical glasses sit)
-  NOSE_TIP:        4,   // tip of nose
-  NOSE_L:        129,   // left  nose wing
-  NOSE_R:        358,   // right nose wing
-
-  // Face contour
-  L_TEMPLE:      234,   // left  temple
-  R_TEMPLE:      454,   // right temple
-  FOREHEAD:       10,   // mid forehead
-  CHIN:          152,   // chin tip
-  JAW_L:         172,   // lower jaw left
-  JAW_R:         397,   // lower jaw right
-  CHEEK_L:       234,   // cheekbone left (same as temple for width)
-  CHEEK_R:       454,   // cheekbone right
-
-  // Mouth
-  L_MOUTH:        61,
-  R_MOUTH:       291,
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ONE EURO FILTER  — removes jitter without introducing lag
-// Reference: Géry Casiez et al., "1€ Filter" CHI 2012
-// ─────────────────────────────────────────────────────────────────────────────
-class OneEuroFilter {
-  /**
-   * @param {number} freq      Estimated signal frequency (Hz)
-   * @param {number} minCutoff Minimum cutoff frequency — higher = less jitter but more lag
-   * @param {number} beta      Speed coefficient — higher = faster response when moving
-   * @param {number} dCutoff   Derivative cutoff frequency
-   */
-  constructor(freq = 30, minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
-    this.freq      = freq;
-    this.minCutoff = minCutoff;
-    this.beta      = beta;
-    this.dCutoff   = dCutoff;
-    this._x        = null;   // filtered value
-    this._dx       = 0;      // filtered derivative
-    this._lastTime = null;
-  }
-
-  _alpha(cutoff) {
-    const tau = 1.0 / (2 * Math.PI * cutoff);
-    const te  = 1.0 / this.freq;
-    return 1.0 / (1.0 + tau / te);
-  }
-
-  filter(x, timestamp) {
-    if (this._lastTime !== null && timestamp !== undefined) {
-      const dt = (timestamp - this._lastTime) / 1000;
-      if (dt > 0) this.freq = 1.0 / dt;
-    }
-    this._lastTime = timestamp;
-
-    if (this._x === null) {
-      this._x  = x;
-      this._dx = 0;
-      return x;
-    }
-
-    // Derivative low-pass
-    const rawDx   = (x - this._x) * this.freq;
-    const alphaDx = this._alpha(this.dCutoff);
-    this._dx      = alphaDx * rawDx + (1 - alphaDx) * this._dx;
-
-    // Adaptive cutoff based on speed
-    const cutoff  = this.minCutoff + this.beta * Math.abs(this._dx);
-    const alpha   = this._alpha(cutoff);
-    this._x       = alpha * x + (1 - alpha) * this._x;
-    return this._x;
-  }
-
-  reset() { this._x = null; this._dx = 0; this._lastTime = null; }
-}
 
 // One Euro filters for each DOF (X, Y, Z position + scale)
 // minCutoff=0.8 → less lag when still; beta=0.05 → much faster response when moving
@@ -525,28 +435,13 @@ function onResize() {
 // COORDINATE MAPPING
 // ─────────────────────────────────────────────────────────────────────────────
 function landmarkToWorld(lm, zOverride) {
-  const w  = window.innerWidth;
-  const h  = window.innerHeight;
-  const vw = el.webcam.videoWidth  || w;
-  const vh = el.webcam.videoHeight || h;
-
-  const windowAspect = w / h;
-  const videoAspect  = vw / vh;
-  const scale        = windowAspect > videoAspect ? w / vw : h / vh;
-
-  const rvw  = vw * scale;
-  const rvh  = vh * scale;
-  const offX = (w - rvw) / 2;
-  const offY = (h - rvh) / 2;
-
-  const px = offX + (1.0 - lm.x) * rvw;
-  const py = offY + lm.y * rvh;
-
-  const halfW = windowAspect;
-  const worldX =  (px / w) * (2 * halfW) - halfW;
-  const worldY = -((py / h) * 2 - 1);
-
-  return new THREE.Vector3(worldX, worldY, zOverride ?? GLASSES_Z_OFFSET);
+  const pt = importedLandmarkToWorld(lm, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    videoWidth: el.webcam?.videoWidth || window.innerWidth,
+    videoHeight: el.webcam?.videoHeight || window.innerHeight
+  }, zOverride ?? GLASSES_Z_OFFSET);
+  return new THREE.Vector3(pt.x, pt.y, pt.z);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,19 +574,7 @@ function updateFaceDots(lmArray, visible) {
   faceDotsMesh.material.opacity = dotsOpacity * 0.35;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LANDMARK VALIDATION — guard against NaN / out-of-range values
-// ─────────────────────────────────────────────────────────────────────────────
-function lmValid(lm) {
-  return lm &&
-    Number.isFinite(lm.x) && Number.isFinite(lm.y) && Number.isFinite(lm.z) &&
-    lm.x >= 0 && lm.x <= 1 && lm.y >= 0 && lm.y <= 1;
-}
 
-function safeLM(lmArray, idx) {
-  const lm = lmArray[idx];
-  return lmValid(lm) ? lm : null;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADAPTIVE LERP — high factor when moving fast, low when still
@@ -710,25 +593,24 @@ function adaptiveLerp(min, max, velocity) {
 // FACE RESULTS  — precision multi-point anchor + One Euro filtered
 // ─────────────────────────────────────────────────────────────────────────────
 function onFaceResults(lmArray, transformMatrix, timestamp) {
-  // ── 1. SCALE — Temple-based Face Width anchoring ──
-  const lt = safeLM(lmArray, LM.L_TEMPLE);
-  const rt = safeLM(lmArray, LM.R_TEMPLE);
-  // Try to use true Iris landmarks if available (478 pts), fallback to inner canthus
-  const hasIris = lmArray.length >= 478;
-  const li = safeLM(lmArray, hasIris ? LM.L_IRIS : LM.L_EYE_INNER);
-  const ri = safeLM(lmArray, hasIris ? LM.R_IRIS : LM.R_EYE_INNER);
+  const viewportOptions = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    videoWidth: el.webcam?.videoWidth || window.innerWidth,
+    videoHeight: el.webcam?.videoHeight || window.innerHeight
+  };
 
-  if (!lt || !rt || !li || !ri) return;
+  const filterState = {
+    scaleFilter: OEF.scale,
+    posFilters: { x: OEF.x, y: OEF.y, z: OEF.z },
+    timestamp
+  };
 
-  const templeW  = landmarkToWorld(lt).distanceTo(landmarkToWorld(rt));   // full face width
+  const res = calculateScaleAndPosition(lmArray, viewportOptions, filterState);
+  if (!res) return;
 
-  // Lenskart-level scale calibration: The width of physical glasses is designed to match 
-  // the width of the face at the temples (so the arms can wrap the ears).
-  // We use temple width as the absolute source of truth for 3D model scale.
-  // Multiplier tuned to perfectly match physical frame width (approx 15% wider than temples for hinges).
-  const rawScale = templeW * 1.15;
-  const filteredScale = OEF.scale.filter(rawScale, timestamp);
-  target.scale.setScalar(Math.max(filteredScale, 0.01));
+  const filteredScale = res.scale;
+  target.scale.setScalar(filteredScale);
 
   // ── 2. ROTATION — from MediaPipe facial transform matrix ──
   if (transformMatrix) {
@@ -743,30 +625,14 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
     target.quat.setFromEuler(new THREE.Euler(fx, fy, fz, 'XYZ'));
   }
 
-  // ── 3. POSITION — Lenskart multi-point nose bridge anchor ──
-  // The physical resting point of glasses is on the lower bridge of the nose.
-  // This guarantees perfect centering between the eyes AND vertical alignment with the ears.
-  const nr = safeLM(lmArray, LM.NOSE_REST);
-  if (!nr) return;
-
-  // Anchor exactly at the lower nose bridge for X, Y, and Z.
-  const anchorX = nr.x;
-  const anchorY = nr.y;
-  const anchorZ = nr.z;
-  const anchor  = { x: anchorX, y: anchorY, z: anchorZ };
-
-  const anchorWorld = landmarkToWorld(anchor);
-
-  // Depth-aware Z offset: pull forward slightly so it doesn't sink into face
-  // Y offset: 0 (glasses origin aligns perfectly with pupil line)
+  // ── 3. POSITION — depth-aware Z offset + position ──
   const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
   const localOffset = new THREE.Vector3(0, 0, -filteredScale * 0.02 * depthFactor);
   localOffset.applyQuaternion(target.quat);
 
-  // Apply One Euro Filter to world position
-  const rawX = anchorWorld.x + localOffset.x;
-  const rawY = anchorWorld.y + localOffset.y;
-  const rawZ = anchorWorld.z + localOffset.z;
+  const rawX = res.anchorWorld.x + localOffset.x;
+  const rawY = res.anchorWorld.y + localOffset.y;
+  const rawZ = res.anchorWorld.z + localOffset.z;
 
   const filteredX = OEF.x.filter(rawX, timestamp);
   const filteredY = OEF.y.filter(rawY, timestamp);
