@@ -752,18 +752,19 @@ function onFaceResults(lmArray, transformMatrix, timestamp) {
   const eyeMidZ = (li.z + ri.z) * 0.5;
   const eyeMid  = { x: eyeMidX, y: eyeMidY, z: eyeMidZ };
 
-  // Weighted blend: heavily prioritize the bridge of the nose for physical resting point
-  const anchorX = eyeMid.x * 0.50 + nb.x * 0.50;
-  const anchorY = eyeMid.y * 0.25 + nb.y * 0.75;
+  // Anchor exactly at the optical center (Iris midpoint) for X and Y.
+  // We use nose bridge for Z to maintain depth stability.
+  const anchorX = eyeMid.x;
+  const anchorY = eyeMid.y;
   const anchorZ = eyeMid.z * 0.50 + nb.z * 0.50;
   const anchor  = { x: anchorX, y: anchorY, z: anchorZ };
 
   const anchorWorld = landmarkToWorld(anchor);
 
-  // Depth-aware Z offset: pull forward slightly (-0.02 instead of -0.08) so it doesn't sink into face
-  // Y offset: push slightly UP (+0.05) to match real nose bridge resting point
+  // Depth-aware Z offset: pull forward slightly so it doesn't sink into face
+  // Y offset: 0 (glasses origin aligns perfectly with pupil line)
   const depthFactor = Math.max(0.5, Math.min(1.5, 1.0 / (filteredScale * 4 + 0.001)));
-  const localOffset = new THREE.Vector3(0, filteredScale * 0.05, -filteredScale * 0.02 * depthFactor);
+  const localOffset = new THREE.Vector3(0, 0, -filteredScale * 0.02 * depthFactor);
   localOffset.applyQuaternion(target.quat);
 
   // Apply One Euro Filter to world position
