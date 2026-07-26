@@ -1,6 +1,12 @@
 {
+  "name": "luceandombra-virtual-tryon",
+  "version": "12.0.0",
+  "description": "Luceandombra — Lenskart-level Virtual Try-On with real 3D GLB frames",
+  "scripts": {
+    "start": "npx serve . -l 3000",
+    "dev": "npx serve . -l 3000"
+  },
   "dependencies": {
-    "puppeteer": "^25.3.0",
-    "three": "^0.185.1"
+    "three": "^0.160.0"
   }
 }
