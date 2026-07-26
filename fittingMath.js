@@ -38,6 +38,10 @@ const LM = {
   // Mouth
   L_MOUTH:        61,
   R_MOUTH:       291,
+  
+  // Custom
+  FOREHEAD:       10,
+  CHIN:          152
 };
 
 /**

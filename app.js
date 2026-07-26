@@ -467,8 +467,10 @@ function calculateRotationFromLandmarks(lmArray, viewportOptions) {
   const fhVec = new THREE.Vector3(fhWorld.x, fhWorld.y, fhWorld.z);
   const chinVec = new THREE.Vector3(chinWorld.x, chinWorld.y, chinWorld.z);
 
-  // X-axis: Left Temple to Right Temple
-  const rightDir = new THREE.Vector3().subVectors(rtVec, ltVec).normalize();
+  // X-axis: Screen Right (User's physical Left Temple) to Screen Left (User's physical Right Temple)
+  // We want the local +X axis to point to Screen Right. 
+  // In a mirrored video, the user's physical Left Temple is on the right side of the screen!
+  const rightDir = new THREE.Vector3().subVectors(ltVec, rtVec).normalize();
   
   // Y-axis: Chin to Forehead
   const upDir = new THREE.Vector3().subVectors(fhVec, chinVec).normalize();
