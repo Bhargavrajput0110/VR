@@ -22,7 +22,7 @@ import { DRACOLoader }          from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoomEnvironment }      from 'three/addons/environments/RoomEnvironment.js';
 import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
-import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js';
+import { LM, lmValid, safeLM, landmarkToWorld as importedLandmarkToWorld, calculateScaleAndPosition, OneEuroFilter } from './fittingMath.js?v=25';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
